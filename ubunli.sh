@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 #
 # ubunli.sh  —  Ubunli
+# Version: 3.0
 # ─────────────────────────────────────────────────────────────────────────────
 # A modern, interactive installer for Kali Linux security tools on
 # Debian / Ubuntu (latest releases). Safe by design:
@@ -86,7 +87,8 @@ banner() {
    ▝▚▄▞▘▐▙▄▞▘▝▚▄▞▘▐▌  ▐▌▐▙▄▄▖▗▄█▄▖
 EOF
   printf "${C_RESET}"
-  printf "${C_GREY}   Ubunli ${G_DOT} modern Kali-tools installer for Debian / Ubuntu${C_RESET}\n\n"
+  printf "${C_GREY}   Ubunli ${G_DOT} Kali security toolkit installer for Debian / Ubuntu${C_RESET}\n"
+  printf "${C_DIM}   v3 ${G_DOT} local catalog + official Kali metapackages${C_RESET}\n\n"
 }
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -99,10 +101,11 @@ run_step() {
   local logf; logf=$(mktemp)
   local frames='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
   [[ "${LANG:-}" == *UTF-8* ]] || frames='|/-\'
+  local pid status=0 i=0
 
   ( "$@" >"$logf" 2>&1 ) &
-  local pid=$!
-  local i=0
+  pid=$!
+
   if [[ "$COLORS" -ge 8 ]]; then
     while kill -0 "$pid" 2>/dev/null; do
       i=$(( (i + 1) % ${#frames} ))
@@ -111,10 +114,11 @@ run_step() {
     done
   else
     printf "%s ... " "$msg"
-    wait "$pid" 2>/dev/null || true
   fi
 
-  if wait "$pid"; then
+  wait "$pid" || status=$?
+
+  if [[ "$status" -eq 0 ]]; then
     printf "\r${C_GREEN}%s${C_RESET} %s%*s\n" "$G_OK" "$msg" 6 ''
     rm -f "$logf"
     return 0
@@ -122,7 +126,7 @@ run_step() {
     printf "\r${C_RED}%s${C_RESET} %s\n" "$G_ERR" "$msg"
     printf "${C_DIM}%s${C_RESET}\n" "$(tail -n 15 "$logf")"
     rm -f "$logf"
-    return 1
+    return "$status"
   fi
 }
 
@@ -141,6 +145,20 @@ require_root() {
     fi
   fi
 }
+
+
+check_base_commands() {
+  local missing=()
+  local cmd
+  for cmd in apt-get dpkg awk sed grep sort tr fold mktemp curl; do
+    command -v "$cmd" >/dev/null 2>&1 || missing+=("$cmd")
+  done
+
+  if [[ ${#missing[@]} -gt 0 ]]; then
+    die "Missing required system commands: ${missing[*]}"
+  fi
+}
+
 
 OS_ID=""; OS_CODENAME=""; OS_LIKE=""
 detect_os() {
@@ -270,6 +288,45 @@ add_cat "reversing"    "Reverse engineering" \
 add_cat "vuln"         "Vulnerability analysis" \
   "nikto legion sqlmap wapiti nuclei"
 
+add_cat "osint"        "Open-source intelligence / discovery" \
+  "theharvester recon-ng amass spiderfoot"
+
+add_cat "network"      "Network assessment & administration" \
+  "nmap masscan arp-scan netdiscover traceroute iperf3 hping3 vlan"
+
+add_cat "ad_windows"   "Windows / Active Directory assessment" \
+  "impacket-scripts ldap-utils smbclient enum4linux nbtscan crackmapexec"
+
+add_cat "privesc"      "Privilege escalation & local enumeration" \
+  "linpeas linux-exploit-suggester pspy"
+
+add_cat "api"          "API & service security testing" \
+  "ffuf gobuster curl jq httpie"
+
+add_cat "database"     "Database assessment" \
+  "sqlmap mariadb-client postgresql-client redis-tools"
+
+add_cat "mobile"       "Android / mobile security" \
+  "adb apktool jadx"
+
+add_cat "cloud"        "Cloud & container security utilities" \
+  "awscli azure-cli kubectl docker.io"
+
+add_cat "stego"        "Steganography & file analysis" \
+  "steghide binwalk exiftool file"
+
+add_cat "malware"      "Malware analysis & sandbox helpers" \
+  "yara yara-doc clamav clamav-daemon"
+
+add_cat "bluetooth"    "Bluetooth / short-range assessment" \
+  "bluez bluez-tools"
+
+add_cat "voip"         "VoIP / SIP assessment" \
+  "sipvicious"
+
+add_cat "wordlists"    "Security wordlists & dictionaries" \
+  "wordlists seclists"
+
 # ═══════════════════════════════════════════════════════════════════════════
 #  Selection state
 # ═══════════════════════════════════════════════════════════════════════════
@@ -328,7 +385,7 @@ category_menu() {
     hr
     printf "  ${C_BOLD}a${C_RESET} select all   ${C_BOLD}n${C_RESET} select none   ${C_BOLD}m${C_RESET} toggle native-only mode\n"
     printf "  ${C_BOLD}i${C_RESET} ${C_GREEN}install selected (%s)${C_RESET}   ${C_BOLD}e${C_RESET} ${C_ACCENT}install everything${C_RESET}   ${C_BOLD}b${C_RESET} back   ${C_BOLD}q${C_RESET} quit\n\n" "$(selected_count)"
-    printf "${C_ACCENT}${G_SPARK}${C_RESET} choose ${C_ARROW} "
+    printf "${C_ACCENT}${G_SPARK}${C_RESET} choose ${G_ARROW} "
     read -r choice
 
     case "$choice" in
@@ -360,14 +417,15 @@ category_menu() {
 # ═══════════════════════════════════════════════════════════════════════════
 
 apt_install_target() {
-  # Installs given packages. If NATIVE_ONLY=0, allows Kali via -t.
-  local pkgs="$1"
+  # Installs one package. Native mode never uses Kali.
+  local pkg="$1"
+
   if [[ "$NATIVE_ONLY" -eq 1 ]]; then
-    $SUDO apt-get install -y --no-install-recommends $pkgs
+    $SUDO apt-get install -y --no-install-recommends "$pkg"
   else
-    # -t kali-rolling lets APT satisfy names from Kali when the system repo
-    # lacks them, while the pin keeps everything else on your system's version.
-    $SUDO apt-get install -y --no-install-recommends -t kali-rolling $pkgs
+    # Explicit target is used only for the requested package.
+    # The repository remains pinned at low priority for normal APT operations.
+    $SUDO apt-get install -y --no-install-recommends -t kali-rolling "$pkg"
   fi
 }
 
@@ -378,8 +436,8 @@ apt_install_target() {
 # ═══════════════════════════════════════════════════════════════════════════
 
 ensure_pkgs() {
-  # Quietly ensure helper packages are present (curl, unzip, etc.)
-  $SUDO apt-get install -y --no-install-recommends "$@" >/dev/null 2>&1 || true
+  # Ensure helper packages are present. Do not silently continue on failure.
+  $SUDO apt-get install -y --no-install-recommends "$@"
 }
 
 gh_latest_tag() {
@@ -454,12 +512,71 @@ fallback_wpscan() {
   $SUDO gem install wpscan
 }
 
+fallback_linpeas() {
+  # PEASS-ng linpeas.sh -> /usr/local/bin/linpeas (executable script).
+  ensure_pkgs curl ca-certificates
+  $SUDO curl -fsSL \
+    "https://github.com/peass-ng/PEASS-ng/releases/latest/download/linpeas.sh" \
+    -o /usr/local/bin/linpeas
+  $SUDO chmod 0755 /usr/local/bin/linpeas
+}
+
+fallback_pspy() {
+  # pspy prebuilt binary -> /usr/local/bin/pspy (arch-aware).
+  ensure_pkgs curl ca-certificates
+  local bin
+  case "$ARCH" in
+    amd64) bin=pspy64 ;;
+    arm64) bin=pspy64 ;;   # release ships pspy64 for aarch64 builds as well
+    armhf) bin=pspy32 ;;
+    i386)  bin=pspy32 ;;
+    *)     bin=pspy64 ;;
+  esac
+  $SUDO curl -fsSL \
+    "https://github.com/DominicBreuker/pspy/releases/latest/download/${bin}" \
+    -o /usr/local/bin/pspy
+  $SUDO chmod 0755 /usr/local/bin/pspy
+}
+
+fallback_les() {
+  # linux-exploit-suggester.sh -> /usr/local/bin/linux-exploit-suggester.
+  ensure_pkgs curl ca-certificates
+  $SUDO curl -fsSL \
+    "https://raw.githubusercontent.com/The-Z-Labs/linux-exploit-suggester/master/linux-exploit-suggester.sh" \
+    -o /usr/local/bin/linux-exploit-suggester
+  $SUDO chmod 0755 /usr/local/bin/linux-exploit-suggester
+}
+
 declare -A FALLBACKS=(
   [metasploit-framework]=fallback_metasploit
   [nuclei]=fallback_nuclei
   [bettercap]=fallback_bettercap
   [wpscan]=fallback_wpscan
+  [linpeas]=fallback_linpeas
+  [pspy]=fallback_pspy
+  [linux-exploit-suggester]=fallback_les
 )
+
+
+verify_tools() {
+  local pkgs="$1"
+  local ok_count=0 miss_count=0 p
+
+  printf "\n${C_BOLD}Post-install verification${C_RESET}\n"
+  for p in $pkgs; do
+    # Package-level verification is reliable for APT-installed packages.
+    if dpkg-query -W -f='${Status}' "$p" 2>/dev/null | grep -q "install ok installed"; then
+      ok_count=$((ok_count + 1))
+    else
+      miss_count=$((miss_count + 1))
+    fi
+  done
+
+  printf "  ${C_GREEN}Installed packages:${C_RESET} %d\n" "$ok_count"
+  printf "  ${C_RED}Missing/unverified:${C_RESET} %d\n" "$miss_count"
+  return 0
+}
+
 
 do_install() {
   local pkgs; pkgs=$(collect_packages)
@@ -514,8 +631,10 @@ do_install() {
     failed=("${still_failed[@]}")
   fi
 
+  verify_tools "$pkgs"
+
   if [[ ${#failed[@]} -eq 0 ]]; then
-    ok "${C_BOLD}All selected tools installed successfully.${C_RESET}"
+    ok "${C_BOLD}All selected package installations completed successfully.${C_RESET}"
   else
     warn "Installed with ${#failed[@]} package(s) unavailable for your release/arch:"
     printf "   ${C_DIM}%s${C_RESET}\n" "${failed[*]}"
@@ -531,7 +650,8 @@ do_install() {
 install_everything() {
   banner
   box "INSTALL EVERYTHING"
-  printf "${C_YELLOW} This selects ALL categories and installs every listed tool.\n"
+  printf "${C_YELLOW} This selects ALL categories in the local catalog. For the complete Kali catalog,\n"
+  printf " use Official Kali Metapackages -> kali-linux-everything.\n"
   printf " Expect a large download and significant disk usage.${C_RESET}\n"
   hr
   printf "${C_GREY} Mode: %s${C_RESET}\n\n" \
@@ -548,40 +668,149 @@ install_everything() {
 }
 
 # ═══════════════════════════════════════════════════════════════════════════
-#  Kali metapackage shortcut (uses Kali's own kali-tools-* bundles)
+#  Official Kali metapackages
+#
+#  Kali maintains these metapackages and uses them to group its tool catalog.
+#  This is preferable to maintaining a manually copied list of hundreds of
+#  package names.
 # ═══════════════════════════════════════════════════════════════════════════
 
-metapackage_menu() {
-  local metas=(
-    "kali-linux-headless|Core CLI tool set (no GUI)"
-    "kali-tools-top10|The 10 most-used Kali tools"
-    "kali-tools-web|Web assessment metapackage"
-    "kali-tools-passwords|Password attack metapackage"
-    "kali-tools-wireless|Wireless metapackage"
-    "kali-tools-information-gathering|Recon metapackage"
-  )
-  banner
-  box "KALI METAPACKAGES (requires Kali repo)"
-  printf "${C_GREY} These are Kali's own curated bundles. Larger downloads.${C_RESET}\n\n"
-  local i=1 m
-  for m in "${metas[@]}"; do
-    printf "  ${C_BOLD}%2d${C_RESET}  ${C_CYAN}%-32s${C_RESET} ${C_GREY}%s${C_RESET}\n" \
-      "$i" "${m%%|*}" "${m#*|}"
-    ((i++))
-  done
-  hr
-  printf "${C_ACCENT}${G_SPARK}${C_RESET} number to install, ${C_BOLD}b${C_RESET} back ${C_ARROW} "
-  read -r sel
-  [[ "$sel" =~ ^[0-9]+$ ]] || return
-  (( sel >= 1 && sel <= ${#metas[@]} )) || return
-  local pkg="${metas[$((sel-1))]%%|*}"
+kali_metapackage_install() {
+  local pkg="$1"
+  local label="$2"
 
   NATIVE_ONLY=0
   setup_kali_repo
-  run_step "Installing ${pkg} (this can take a while)" \
-    bash -c "$SUDO apt-get install -y -t kali-rolling $pkg" \
-    && ok "${pkg} installed." || err "Failed to install ${pkg}."
-  read -rp "$(printf "\n${C_GREY}Press Enter to continue...${C_RESET}")" _
+
+  box "$label"
+  printf "${C_GREY}Kali's official metapackage will resolve its own dependencies.${C_RESET}\n"
+  printf "${C_YELLOW}This can download a large amount of software and may introduce\n"
+  printf "Kali-specific dependencies onto a Debian/Ubuntu system.${C_RESET}\n\n"
+
+  if [[ "$pkg" == "kali-linux-everything" ]]; then
+    printf "${C_RED}${C_BOLD}WARNING: This is the complete Kali tool collection.${C_RESET}\n"
+    printf "${C_GREY}Kali documents this as installing every Kali tool/metapackage.\n"
+    printf "It is much larger than the normal/headless selections.${C_RESET}\n\n"
+  fi
+
+  printf "${C_YELLOW}Run APT simulation first? [Y/n] ${C_RESET}"
+  read -r sim
+  if [[ ! "$sim" =~ ^[Nn]$ ]]; then
+    run_step "Simulating ${pkg}" \
+      bash -c "$SUDO apt-get -s -t kali-rolling install --no-install-recommends '$pkg'" \
+      || { err "APT simulation failed; installation was not started."; return 1; }
+  fi
+
+  printf "\n${C_YELLOW}Proceed with installing ${pkg}? [y/N] ${C_RESET}"
+  read -r yn
+  [[ "$yn" =~ ^[Yy]$ ]] || { warn "Cancelled."; return 0; }
+
+  run_step "Installing ${pkg} (this may take a long time)" \
+    bash -c "$SUDO apt-get install -y -t kali-rolling --no-install-recommends '$pkg'" \
+    && ok "${pkg} installed." \
+    || { err "Failed to install ${pkg}."; return 1; }
+}
+
+metapackage_menu() {
+  local metas=(
+    "kali-linux-headless|Kali's default headless tool collection"
+    "kali-linux-default|Kali's default desktop-oriented tool collection"
+    "kali-linux-large|Extended Kali tool selection"
+    "kali-linux-everything|Complete Kali tool/metapackage collection"
+  )
+
+  while true; do
+    banner
+    box "OFFICIAL KALI METAPACKAGES"
+    printf "${C_GREY}These are maintained by Kali rather than by this script.${C_RESET}\n\n"
+
+    local i=1 m
+    for m in "${metas[@]}"; do
+      printf "  ${C_BOLD}%2d${C_RESET}  ${C_CYAN}%-28s${C_RESET} ${C_GREY}%s${C_RESET}\n" \
+        "$i" "${m%%|*}" "${m#*|}"
+      ((i++))
+    done
+
+    hr
+    printf "  ${C_BOLD}b${C_RESET}  back\n\n"
+    printf "${C_ACCENT}${G_SPARK}${C_RESET} choose ${G_ARROW} "
+    read -r sel
+
+    [[ "$sel" =~ ^[0-9]+$ ]] || [[ "$sel" =~ ^[Bb]$ ]] || continue
+    [[ "$sel" =~ ^[Bb]$ ]] && return
+    (( sel >= 1 && sel <= ${#metas[@]} )) || continue
+
+    local entry="${metas[$((sel-1))]}"
+    local pkg="${entry%%|*}"
+    local label="${entry#*|}"
+
+    kali_metapackage_install "$pkg" "$label"
+    read -rp "$(printf "\n${C_GREY}Press Enter to continue...${C_RESET}")" _
+  done
+}
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  Official Kali tool-category metapackages
+# ═══════════════════════════════════════════════════════════════════════════
+
+official_category_menu() {
+  local metas=(
+    "kali-tools-information-gathering|OSINT & information gathering"
+    "kali-tools-vulnerability|Vulnerability assessment"
+    "kali-tools-web|Web application security"
+    "kali-tools-database|Database security"
+    "kali-tools-passwords|Password assessment"
+    "kali-tools-wireless|Wireless"
+    "kali-tools-802-11|802.11 / Wi-Fi"
+    "kali-tools-bluetooth|Bluetooth"
+    "kali-tools-rfid|RFID"
+    "kali-tools-sdr|Software Defined Radio"
+    "kali-tools-voip|VoIP"
+    "kali-tools-reverse-engineering|Reverse engineering"
+    "kali-tools-exploitation|Exploitation"
+    "kali-tools-post-exploitation|Post exploitation"
+    "kali-tools-forensics|Forensics"
+    "kali-tools-sniffing-spoofing|Sniffing & spoofing"
+    "kali-tools-social-engineering|Social engineering"
+    "kali-tools-fuzzing|Fuzzing"
+    "kali-tools-hardware|Hardware security"
+    "kali-tools-crypto-stego|Cryptography & steganography"
+    "kali-tools-reporting|Security reporting"
+    "kali-tools-protect|Protection / hardening"
+    "kali-tools-respond|Incident response"
+    "kali-tools-recover|Recovery"
+    "kali-tools-gpu|GPU tools"
+    "kali-tools-windows-resources|Windows resources"
+  )
+
+  while true; do
+    banner
+    box "KALI TOOL CATEGORIES"
+    printf "${C_GREY}Select an official Kali category to install.${C_RESET}\n\n"
+
+    local i=1 m
+    for m in "${metas[@]}"; do
+      printf "  ${C_BOLD}%2d${C_RESET}  ${C_CYAN}%-31s${C_RESET} ${C_GREY}%s${C_RESET}\n" \
+        "$i" "${m%%|*}" "${m#*|}"
+      ((i++))
+    done
+
+    hr
+    printf "  ${C_BOLD}b${C_RESET}  back\n\n"
+    printf "${C_ACCENT}${G_SPARK}${C_RESET} choose ${G_ARROW} "
+    read -r sel
+
+    [[ "$sel" =~ ^[Bb]$ ]] && return
+    [[ "$sel" =~ ^[0-9]+$ ]] || continue
+    (( sel >= 1 && sel <= ${#metas[@]} )) || continue
+
+    local entry="${metas[$((sel-1))]}"
+    local pkg="${entry%%|*}"
+    local label="${entry#*|}"
+
+    kali_metapackage_install "$pkg" "$label"
+    read -rp "$(printf "\n${C_GREY}Press Enter to continue...${C_RESET}")" _
+  done
 }
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -601,7 +830,7 @@ main_menu() {
     printf "  ${C_BOLD}7${C_RESET}  ${C_CYAN}${G_DOT}${C_RESET} Show system / status info\n"
     printf "  ${C_BOLD}q${C_RESET}  ${C_GREY}${G_DOT}${C_RESET} Quit\n"
     printf "  ${C_GREY}%s${C_RESET}\n\n" "$(hr)"
-    printf "${C_ACCENT}${G_SPARK}${C_RESET} select ${C_ARROW} "
+    printf "${C_ACCENT}${G_SPARK}${C_RESET} select ${G_ARROW} "
     read -r opt
 
     case "$opt" in
@@ -620,6 +849,12 @@ main_menu() {
   done
 }
 
+
+disk_space_check() {
+  local target="${1:-/}"
+  df -Pk "$target" 2>/dev/null | awk 'NR==2 {printf "%s free / %s total\n", $4 " KB", $2 " KB"}'
+}
+
 show_status() {
   banner
   box "STATUS"
@@ -629,6 +864,7 @@ show_status() {
   printf "  ${C_CYAN}Kali repo${C_RESET}   : %s\n" \
     "$(kali_repo_present && printf "${C_GREEN}configured (pinned)${C_RESET}" || printf "${C_GREY}not configured${C_RESET}")"
   printf "  ${C_CYAN}sudo${C_RESET}        : %s\n" "${SUDO:-running as root}"
+  printf "  ${C_CYAN}Disk${C_RESET}       : %s\n" "$(disk_space_check /)"
 }
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -639,6 +875,7 @@ trap 'printf "\n${C_RED}Interrupted.${C_RESET}\n"; exit 130' INT
 
 main() {
   banner
+  check_base_commands
   detect_os
   detect_arch
   require_root
