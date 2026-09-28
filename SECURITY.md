@@ -2,14 +2,15 @@
 
 ## Scope
 
-Ubunli is an **installer** for third-party security tools. This policy covers
-vulnerabilities in **Ubunli itself** — for example, the script's handling of
-repositories, GPG keys, APT pinning, downloaded binaries, or privilege
-escalation via `sudo`.
+Ubunli is an **installer** that discovers and installs third-party security
+tools from Kali's official repository. This policy covers vulnerabilities in
+**Ubunli itself** — for example, its handling of the Kali repository, the GPG
+signing key, APT pinning, package discovery, or privilege escalation via `sudo`.
 
-Vulnerabilities in the tools Ubunli installs (nmap, Metasploit, nuclei,
-bettercap, wpscan, etc.) are **out of scope** here — please report those to the
-respective upstream projects.
+Vulnerabilities in the tools Ubunli installs (nmap, Metasploit, sqlmap, etc.)
+are **out of scope** here — please report those to the respective upstream
+projects. Issues in Kali's packaging or metapackages should go to the
+[Kali bug tracker](https://bugs.kali.org/).
 
 ## Supported Versions
 
@@ -18,6 +19,7 @@ Only the latest release on the `main` branch receives security fixes.
 | Version | Supported |
 | ------- | :-------: |
 | Latest `main` / newest release | ✅ |
+| Older tags | ❌ |
 
 ## Reporting a Vulnerability
 

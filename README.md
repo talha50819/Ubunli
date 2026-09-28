@@ -10,9 +10,9 @@
   <img src="https://cdn.simpleicons.org/ubuntu/E95420" alt="Ubuntu" height="64" />
 </p>
 
-**A modern, interactive installer for Kali Linux security tools on Debian &amp; Ubuntu.**
+**A modern installer for Kali Linux security tools on Debian &amp; Ubuntu — driven entirely by Kali's own metapackages.**
 
-Pick tool categories from a clean terminal menu — or install everything — without breaking your system.
+Nothing is hardcoded. Ubunli discovers the official categories and their tools **live from APT**, then lets you pick exactly what to install.
 
 <p>
   <img src="https://img.shields.io/badge/Kali_Linux-557C94?style=for-the-badge&logo=kalilinux&logoColor=white" alt="Kali Linux" />
@@ -39,16 +39,27 @@ By downloading, running, or contributing to this project you acknowledge that yo
 
 ---
 
+## How it works
+
+Ubunli does **not** ship a list of tools. Instead it uses Kali's [official metapackages](https://www.kali.org/docs/general-use/metapackages/) as the source of truth:
+
+1. It adds Kali's repository (pinned, see below) and refreshes the package index.
+2. **Categories** are discovered with `apt-cache search '^kali-tools-'` — the same categories Kali documents, with their live descriptions.
+3. **The tools inside a category** are read with `apt-cache depends` on that metapackage, so the list is always current — no maintenance, no stale names.
+4. You pick a category, then pick exactly which tools to install (or install the whole metapackage).
+
+Because everything comes from APT at runtime, Ubunli automatically reflects new tools, renames, and removals as Kali publishes them.
+
+---
+
 ## Features
 
-- 🎛️ **Interactive TUI** — colored menus, category toggles, progress spinners.
-- 🧩 **23 tool categories** — recon, OSINT, web, passwords, wireless, sniffing, exploitation, forensics, reversing, privesc, Windows/AD, database, mobile, cloud, stego, malware, Bluetooth, VoIP, and more.
-- 📦 **Install everything** — one option to pull every listed tool.
-- 🐉 **Official Kali metapackages** — install Kali's own system bundles (`kali-linux-headless/default/large/everything`) and the full set of `kali-tools-*` category metapackages.
-- ✅ **Post-install verification** — reports how many selected packages actually verified as installed.
-- 🛡️ **Safe by design** — Kali's repo is added with a pin so it can **never** silently upgrade or replace your system packages.
-- 🌿 **Native-only mode** — skip Kali entirely and install the many tools already in Debian/Ubuntu `universe`.
-- ⬆️ **Upstream fallbacks** — tools missing from apt (Metasploit, nuclei, bettercap, wpscan, linpeas, pspy, linux-exploit-suggester) install automatically from their official sources.
+- 🔎 **Zero hardcoded tools** — categories and their tools are fetched live from Kali's package index.
+- 🧭 **Browse official categories** (`kali-tools-*`) with real descriptions, then drill into any one.
+- 🎯 **Granular selection** — choose tools by number or range (`1 3 5-8`), install all, or install the whole metapackage.
+- 🐉 **Full system collections** (`kali-linux-*`) including the "Others" sets: `kali-linux-large`, `kali-linux-everything`, and more.
+- 🛡️ **Safe by design** — Kali's repo is pinned so it can **never** silently upgrade or replace your system packages.
+- ✅ **Verification &amp; dry-runs** — per-package `dpkg` verification, and an optional APT simulation before big metapackage installs.
 - 🔑 **Modern keyring flow** — uses `signed-by` keyrings, not the deprecated `apt-key`.
 
 ---
@@ -56,11 +67,8 @@ By downloading, running, or contributing to this project you acknowledge that yo
 ## Requirements
 
 - Debian or Ubuntu (latest releases) or a close derivative (Pop!\_OS, Mint, Zorin, elementary).
-- `bash`, `sudo`, and an internet connection.
-- On Ubuntu, enable the `universe` component for native mode:
-  ```bash
-  sudo add-apt-repository universe
-  ```
+- `bash`, `sudo`, `curl`, `gpg`, and standard tools (`apt-get`, `apt-cache`, `dpkg-query`, `awk`, `sed`, `grep`) — checked at startup.
+- An internet connection (the whole catalog is fetched online).
 
 ---
 
@@ -84,19 +92,21 @@ The script requests elevated privileges via `sudo` only when it needs to touch A
 
 | Option | Action |
 | :----: | :----- |
-| 1 | Choose tool categories &amp; install |
-| 2 | **Install everything** (all local categories) |
-| 3 | Kali **system** metapackages (`kali-linux-headless` / `default` / `large` / `everything`) |
-| 4 | Official Kali **tool-category** metapackages (`kali-tools-*`) |
-| 5 | Add / configure the Kali repository (pinned) |
-| 6 | Update all installed packages |
-| 7 | Remove the Kali repository (keeps installed tools) |
-| 8 | Show system / status info |
+| 1 | Browse tool categories &amp; pick tools (`kali-tools-*`) |
+| 2 | Install a full system collection (`kali-linux-*`, incl. "Others") |
+| 3 | Add / configure the Kali repository (pinned) |
+| 4 | Update all installed packages |
+| 5 | Remove the Kali repository (keeps installed tools) |
+| 6 | Show status |
 
-### Modes
+### Selecting tools
 
-- **Kali + native (default):** installs from Debian/Ubuntu where possible, and falls back to the pinned Kali repo for tools not packaged natively.
-- **Native only:** toggle with `m` in the category picker to avoid third-party repositories entirely.
+Inside a category you'll see the live tool list. At the prompt you can:
+
+- type numbers and ranges — e.g. `1 3 5-8` — to install just those tools,
+- press `a` to install every tool in the category,
+- press `m` to install the whole category metapackage (APT resolves it), or
+- press `b` to go back.
 
 ---
 
@@ -104,61 +114,36 @@ The script requests elevated privileges via `sudo` only when it needs to touch A
 
 The common way to get Kali tools on Ubuntu — dropping Kali's full repo into your sources — is dangerous: it lets Kali packages upgrade core system libraries and frequently **breaks the OS**. Ubunli avoids this:
 
-1. **APT pinning.** Every package originating from Kali is pinned to `Pin-Priority: 50`, well below your system's default. This means Kali packages are **never** auto-selected and **never** replace an existing system package. They install **only** when you explicitly request them.
-2. **Explicit targeting.** Installs from Kali use `-t kali-rolling`, so APT only reaches into Kali for the specific tool you asked for.
-3. **Clean removal.** Option 7 removes the repository, pin, and signing key in one step. Already-installed tools remain.
+1. **APT pinning.** Every package originating from Kali is pinned to `Pin-Priority: 50`, well below your system's default. Kali packages are **never** auto-selected and **never** replace an existing system package — they install **only** when you explicitly request them.
+2. **Explicit targeting.** Installs use `-t kali-rolling`, so APT only reaches into Kali for the specific package you asked for.
+3. **Clean removal.** Option 5 removes the repository, pin, and signing key in one step. Already-installed tools remain.
 
 You can inspect exactly what gets written:
 
 ```
-/etc/apt/sources.list.d/kali-tools-installer.list   # the repo
-/etc/apt/preferences.d/kali-tools-installer.pref    # the pin
-/usr/share/keyrings/kali-archive-keyring.gpg        # the signing key
+/etc/apt/sources.list.d/ubunli-kali.list       # the repo
+/etc/apt/preferences.d/ubunli-kali.pref        # the pin
+/usr/share/keyrings/kali-archive-keyring.gpg   # the signing key
 ```
 
 > Even with pinning, some risk remains when mixing repositories on a system you rely on. For serious or repeated use, run Ubunli in a VM/container.
 
 ---
 
-## Tool categories
+## Notes &amp; limitations
 
-| Category | Contents (examples) |
-| :------- | :------------------ |
-| `essentials` | nmap, netcat, tcpdump, curl, git, whois |
-| `recon` | masscan, dnsrecon, theharvester, amass, fierce |
-| `osint` | theharvester, recon-ng, amass, spiderfoot |
-| `webapp` | nikto, sqlmap, wfuzz, gobuster, ffuf, wpscan |
-| `passwords` | hashcat, john, hydra, crunch, seclists |
-| `wireless` | aircrack-ng, reaver, wifite, kismet, macchanger |
-| `sniffing` | wireshark, ettercap, bettercap, mitmproxy, dsniff |
-| `exploit` | metasploit-framework, exploitdb, set |
-| `forensics` | sleuthkit, autopsy, foremost, binwalk, exiftool |
-| `reversing` | radare2, gdb, ltrace, strace, binutils |
-| `vuln` | nikto, wapiti, nuclei, legion |
-| `network` | nmap, masscan, arp-scan, netdiscover, hping3 |
-| `ad_windows` | impacket-scripts, smbclient, enum4linux, nbtscan |
-| `privesc` | linpeas, pspy, linux-exploit-suggester |
-| `api` | ffuf, gobuster, curl, jq, httpie |
-| `database` | sqlmap, mariadb-client, postgresql-client, redis-tools |
-| `mobile` | adb, apktool, jadx |
-| `cloud` | awscli, azure-cli, kubectl, docker.io |
-| `stego` | steghide, binwalk, exiftool, file |
-| `malware` | yara, clamav |
-| `bluetooth` | bluez, bluez-tools |
-| `voip` | sipvicious |
-| `wordlists` | wordlists, seclists |
-
-Some packages (e.g. `metasploit-framework`, `nuclei`, `bettercap`, `wpscan`, `linpeas`, `pspy`, `linux-exploit-suggester`) are not in plain Debian/Ubuntu repos. When apt can't find one, Ubunli automatically falls back to the tool's **official upstream source** (Rapid7's signed repo for Metasploit; GitHub release binaries/scripts for nuclei, bettercap, linpeas, pspy, and linux-exploit-suggester into `/usr/local/bin`; the `wpscan` Ruby gem). Only if both apt and the upstream fallback fail is a package reported as unavailable — the run never aborts.
-
-A few tools (`kubectl`, `azure-cli`, `spiderfoot`, `crackmapexec`, `impacket-scripts`, `jadx`) live only in the Kali repo or in vendor repositories. These install in **Kali mode** and are reported as unavailable in **native-only mode**.
+- The catalog only appears **after** the Kali repository is configured and the index is refreshed — Ubunli sets this up automatically the first time you browse.
+- Some Kali tools are built only for certain architectures; anything not installable on your release/arch is reported at the end of an install and the run never aborts.
+- Installing large collections such as `kali-linux-everything` pulls a very large number of packages and Kali-specific dependencies onto a Debian/Ubuntu system. Use a dry-run first (Ubunli offers one) and prefer a VM.
 
 ---
 
 ## Troubleshooting
 
-- **A tool "was unavailable for your release/arch."** It isn't packaged for your distro/architecture. Try Kali mode, or install it from the project's upstream source.
-- **`E: The repository ... is not signed`.** Re-run option 5 to reinstall the signing key.
-- **Something feels broken after installing.** Run option 7 to remove the Kali repo, then `sudo apt update`. Pinning prevents system packages from being replaced, so your base system should be intact.
+- **No categories/tools appear.** The Kali index isn't loaded yet — choose option 3 to add the repository, or let Ubunli set it up when you open a category, then retry.
+- **`E: The repository ... is not signed`.** Re-run option 3 to reinstall the signing key.
+- **A tool is reported "unavailable."** It isn't built for your distro/architecture. Try a different tool, or install from the project's upstream source.
+- **Something feels broken after installing.** Run option 5 to remove the Kali repo, then `sudo apt update`. Pinning prevents system packages from being replaced, so your base system should be intact.
 
 ---
 

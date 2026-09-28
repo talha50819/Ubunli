@@ -18,18 +18,6 @@ Desktop.ini
 tmp/
 temp/
 
-# ── Downloaded artifacts / build output ──────────────────────────────
-# (Ubunli downloads upstream binaries to /tmp at runtime, but guard
-#  against any stray local copies being committed.)
-*.zip
-*.tar.gz
-*.deb
-msfinstall
-nuclei
-bettercap
-build/
-dist/
-
 # ── Secrets / local config (never commit these) ──────────────────────
 *.key
 *.pem
