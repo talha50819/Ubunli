@@ -823,11 +823,12 @@ main_menu() {
     printf "  ${C_GREY}%s${C_RESET}\n" "$(hr)"
     printf "  ${C_BOLD}1${C_RESET}  ${C_GREEN}${G_DOT}${C_RESET} Choose tool categories & install\n"
     printf "  ${C_BOLD}2${C_RESET}  ${C_ACCENT}${G_SPARK}${C_RESET} ${C_BOLD}Install EVERYTHING${C_RESET} (all categories)\n"
-    printf "  ${C_BOLD}3${C_RESET}  ${C_PURP}${G_DOT}${C_RESET} Install Kali metapackages (curated bundles)\n"
-    printf "  ${C_BOLD}4${C_RESET}  ${C_BLUE}${G_DOT}${C_RESET} Add / configure Kali repository (pinned)\n"
-    printf "  ${C_BOLD}5${C_RESET}  ${C_YELLOW}${G_DOT}${C_RESET} Update all installed packages\n"
-    printf "  ${C_BOLD}6${C_RESET}  ${C_RED}${G_DOT}${C_RESET} Remove Kali repository (keeps installed tools)\n"
-    printf "  ${C_BOLD}7${C_RESET}  ${C_CYAN}${G_DOT}${C_RESET} Show system / status info\n"
+    printf "  ${C_BOLD}3${C_RESET}  ${C_PURP}${G_DOT}${C_RESET} Kali system metapackages (headless / default / large / everything)\n"
+    printf "  ${C_BOLD}4${C_RESET}  ${C_PURP}${G_DOT}${C_RESET} Official Kali tool-category metapackages (kali-tools-*)\n"
+    printf "  ${C_BOLD}5${C_RESET}  ${C_BLUE}${G_DOT}${C_RESET} Add / configure Kali repository (pinned)\n"
+    printf "  ${C_BOLD}6${C_RESET}  ${C_YELLOW}${G_DOT}${C_RESET} Update all installed packages\n"
+    printf "  ${C_BOLD}7${C_RESET}  ${C_RED}${G_DOT}${C_RESET} Remove Kali repository (keeps installed tools)\n"
+    printf "  ${C_BOLD}8${C_RESET}  ${C_CYAN}${G_DOT}${C_RESET} Show system / status info\n"
     printf "  ${C_BOLD}q${C_RESET}  ${C_GREY}${G_DOT}${C_RESET} Quit\n"
     printf "  ${C_GREY}%s${C_RESET}\n\n" "$(hr)"
     printf "${C_ACCENT}${G_SPARK}${C_RESET} select ${G_ARROW} "
@@ -837,12 +838,13 @@ main_menu() {
       1) category_menu ;;
       2) install_everything ;;
       3) metapackage_menu ;;
-      4) NATIVE_ONLY=0; setup_kali_repo; read -rp "$(printf "\n${C_GREY}Press Enter...${C_RESET}")" _ ;;
-      5) run_step "Updating index" $SUDO apt-get update
+      4) official_category_menu ;;
+      5) NATIVE_ONLY=0; setup_kali_repo; read -rp "$(printf "\n${C_GREY}Press Enter...${C_RESET}")" _ ;;
+      6) run_step "Updating index" $SUDO apt-get update
          run_step "Upgrading packages" $SUDO apt-get upgrade -y
          read -rp "$(printf "\n${C_GREY}Press Enter...${C_RESET}")" _ ;;
-      6) remove_kali_repo; read -rp "$(printf "\n${C_GREY}Press Enter...${C_RESET}")" _ ;;
-      7) show_status; read -rp "$(printf "\n${C_GREY}Press Enter...${C_RESET}")" _ ;;
+      7) remove_kali_repo; read -rp "$(printf "\n${C_GREY}Press Enter...${C_RESET}")" _ ;;
+      8) show_status; read -rp "$(printf "\n${C_GREY}Press Enter...${C_RESET}")" _ ;;
       q|Q) printf "\n${C_GREY}Stay ethical. Test only what you're authorized to.${C_RESET}\n\n"; exit 0 ;;
       *) : ;;
     esac

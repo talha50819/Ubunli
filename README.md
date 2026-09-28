@@ -42,12 +42,13 @@ By downloading, running, or contributing to this project you acknowledge that yo
 ## Features
 
 - 🎛️ **Interactive TUI** — colored menus, category toggles, progress spinners.
-- 🧩 **Category-based selection** — recon, web, passwords, wireless, sniffing, exploitation, forensics, reversing, and more.
+- 🧩 **23 tool categories** — recon, OSINT, web, passwords, wireless, sniffing, exploitation, forensics, reversing, privesc, Windows/AD, database, mobile, cloud, stego, malware, Bluetooth, VoIP, and more.
 - 📦 **Install everything** — one option to pull every listed tool.
-- 🐉 **Kali metapackages** — install Kali's own curated `kali-tools-*` bundles.
+- 🐉 **Official Kali metapackages** — install Kali's own system bundles (`kali-linux-headless/default/large/everything`) and the full set of `kali-tools-*` category metapackages.
+- ✅ **Post-install verification** — reports how many selected packages actually verified as installed.
 - 🛡️ **Safe by design** — Kali's repo is added with a pin so it can **never** silently upgrade or replace your system packages.
 - 🌿 **Native-only mode** — skip Kali entirely and install the many tools already in Debian/Ubuntu `universe`.
-- ⬆️ **Upstream fallbacks** — tools missing from apt (Metasploit, nuclei, bettercap, wpscan) install automatically from their official upstream sources.
+- ⬆️ **Upstream fallbacks** — tools missing from apt (Metasploit, nuclei, bettercap, wpscan, linpeas, pspy, linux-exploit-suggester) install automatically from their official sources.
 - 🔑 **Modern keyring flow** — uses `signed-by` keyrings, not the deprecated `apt-key`.
 
 ---
@@ -84,12 +85,13 @@ The script requests elevated privileges via `sudo` only when it needs to touch A
 | Option | Action |
 | :----: | :----- |
 | 1 | Choose tool categories &amp; install |
-| 2 | **Install everything** (all categories) |
-| 3 | Install Kali metapackages (curated bundles) |
-| 4 | Add / configure the Kali repository (pinned) |
-| 5 | Update all installed packages |
-| 6 | Remove the Kali repository (keeps installed tools) |
-| 7 | Show system / status info |
+| 2 | **Install everything** (all local categories) |
+| 3 | Kali **system** metapackages (`kali-linux-headless` / `default` / `large` / `everything`) |
+| 4 | Official Kali **tool-category** metapackages (`kali-tools-*`) |
+| 5 | Add / configure the Kali repository (pinned) |
+| 6 | Update all installed packages |
+| 7 | Remove the Kali repository (keeps installed tools) |
+| 8 | Show system / status info |
 
 ### Modes
 
@@ -104,7 +106,7 @@ The common way to get Kali tools on Ubuntu — dropping Kali's full repo into yo
 
 1. **APT pinning.** Every package originating from Kali is pinned to `Pin-Priority: 50`, well below your system's default. This means Kali packages are **never** auto-selected and **never** replace an existing system package. They install **only** when you explicitly request them.
 2. **Explicit targeting.** Installs from Kali use `-t kali-rolling`, so APT only reaches into Kali for the specific tool you asked for.
-3. **Clean removal.** Option 6 removes the repository, pin, and signing key in one step. Already-installed tools remain.
+3. **Clean removal.** Option 7 removes the repository, pin, and signing key in one step. Already-installed tools remain.
 
 You can inspect exactly what gets written:
 
@@ -124,6 +126,7 @@ You can inspect exactly what gets written:
 | :------- | :------------------ |
 | `essentials` | nmap, netcat, tcpdump, curl, git, whois |
 | `recon` | masscan, dnsrecon, theharvester, amass, fierce |
+| `osint` | theharvester, recon-ng, amass, spiderfoot |
 | `webapp` | nikto, sqlmap, wfuzz, gobuster, ffuf, wpscan |
 | `passwords` | hashcat, john, hydra, crunch, seclists |
 | `wireless` | aircrack-ng, reaver, wifite, kismet, macchanger |
@@ -132,16 +135,30 @@ You can inspect exactly what gets written:
 | `forensics` | sleuthkit, autopsy, foremost, binwalk, exiftool |
 | `reversing` | radare2, gdb, ltrace, strace, binutils |
 | `vuln` | nikto, wapiti, nuclei, legion |
+| `network` | nmap, masscan, arp-scan, netdiscover, hping3 |
+| `ad_windows` | impacket-scripts, smbclient, enum4linux, nbtscan |
+| `privesc` | linpeas, pspy, linux-exploit-suggester |
+| `api` | ffuf, gobuster, curl, jq, httpie |
+| `database` | sqlmap, mariadb-client, postgresql-client, redis-tools |
+| `mobile` | adb, apktool, jadx |
+| `cloud` | awscli, azure-cli, kubectl, docker.io |
+| `stego` | steghide, binwalk, exiftool, file |
+| `malware` | yara, clamav |
+| `bluetooth` | bluez, bluez-tools |
+| `voip` | sipvicious |
+| `wordlists` | wordlists, seclists |
 
-Some packages (e.g. `metasploit-framework`, `nuclei`, `bettercap`, `wpscan`) are not in plain Debian/Ubuntu repos. When apt can't find one, Ubunli automatically falls back to the tool's **official upstream installer** (Rapid7's signed repo for Metasploit, GitHub release binaries for nuclei and bettercap into `/usr/local/bin`, and the `wpscan` Ruby gem). Only if both apt and the upstream fallback fail is a package reported as unavailable — the run never aborts.
+Some packages (e.g. `metasploit-framework`, `nuclei`, `bettercap`, `wpscan`, `linpeas`, `pspy`, `linux-exploit-suggester`) are not in plain Debian/Ubuntu repos. When apt can't find one, Ubunli automatically falls back to the tool's **official upstream source** (Rapid7's signed repo for Metasploit; GitHub release binaries/scripts for nuclei, bettercap, linpeas, pspy, and linux-exploit-suggester into `/usr/local/bin`; the `wpscan` Ruby gem). Only if both apt and the upstream fallback fail is a package reported as unavailable — the run never aborts.
+
+A few tools (`kubectl`, `azure-cli`, `spiderfoot`, `crackmapexec`, `impacket-scripts`, `jadx`) live only in the Kali repo or in vendor repositories. These install in **Kali mode** and are reported as unavailable in **native-only mode**.
 
 ---
 
 ## Troubleshooting
 
 - **A tool "was unavailable for your release/arch."** It isn't packaged for your distro/architecture. Try Kali mode, or install it from the project's upstream source.
-- **`E: The repository ... is not signed`.** Re-run option 4 to reinstall the signing key.
-- **Something feels broken after installing.** Run option 6 to remove the Kali repo, then `sudo apt update`. Pinning prevents system packages from being replaced, so your base system should be intact.
+- **`E: The repository ... is not signed`.** Re-run option 5 to reinstall the signing key.
+- **Something feels broken after installing.** Run option 7 to remove the Kali repo, then `sudo apt update`. Pinning prevents system packages from being replaced, so your base system should be intact.
 
 ---
 
