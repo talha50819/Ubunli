@@ -16,11 +16,6 @@ projects. Issues in Kali's packaging or metapackages should go to the
 
 Only the latest release on the `main` branch receives security fixes.
 
-| Version | Supported |
-| ------- | :-------: |
-| Latest `main` / newest release | ✅ |
-| Older tags | ❌ |
-
 ## Reporting a Vulnerability
 
 **Please do not open a public issue for security problems.**
