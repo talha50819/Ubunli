@@ -246,10 +246,24 @@ has_candidate() {
 # ═══════════════════════════════════════════════════════════════════════════
 
 # Print "name<TAB>description" for every metapackage matching a regex.
-discover() {
-  local pattern="$1"
-  apt-cache search --names-only "$pattern" 2>/dev/null \
-    | sed -E 's/ - / \t/' | sort
+# Load matches of a pattern into parallel arrays NAMES[] and DESCS[].
+# Splits each "name - description" line on the FIRST " - " using pure bash,
+# so package names never pick up stray whitespace.
+declare -a NAMES DESCS
+load_list() {
+  local pattern="$1" line name desc
+  NAMES=(); DESCS=()
+  while IFS= read -r line; do
+    [[ -n "$line" ]] || continue
+    name="${line%% *}"          # first token = package name (no trailing space)
+    if [[ "$line" == *" - "* ]]; then
+      desc="${line#* - }"       # text after the first " - "
+    else
+      desc="$name"
+    fi
+    [[ -n "$name" ]] || continue
+    NAMES+=("$name"); DESCS+=("$desc")
+  done < <(apt-cache search --names-only "$pattern" 2>/dev/null | sort)
 }
 
 # Print the member tools of a metapackage (its Depends + Recommends),
@@ -258,17 +272,6 @@ members() {
   apt-cache depends "$1" 2>/dev/null \
     | awk '/Depends:|Recommends:/ {print $NF}' \
     | grep -Ev '^<|^kali-' | sort -u
-}
-
-# Load matches of a pattern into parallel arrays NAMES[] and DESCS[].
-declare -a NAMES DESCS
-load_list() {
-  local pattern="$1" line
-  NAMES=(); DESCS=()
-  while IFS=$'\t' read -r name desc; do
-    [[ -n "$name" ]] || continue
-    NAMES+=("$name"); DESCS+=("${desc:-$name}")
-  done < <(discover "$pattern")
 }
 
 # ═══════════════════════════════════════════════════════════════════════════
