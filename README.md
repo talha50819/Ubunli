@@ -47,6 +47,7 @@ By downloading, running, or contributing to this project you acknowledge that yo
 - 🐉 **Kali metapackages** — install Kali's own curated `kali-tools-*` bundles.
 - 🛡️ **Safe by design** — Kali's repo is added with a pin so it can **never** silently upgrade or replace your system packages.
 - 🌿 **Native-only mode** — skip Kali entirely and install the many tools already in Debian/Ubuntu `universe`.
+- ⬆️ **Upstream fallbacks** — tools missing from apt (Metasploit, nuclei, bettercap, wpscan) install automatically from their official upstream sources.
 - 🔑 **Modern keyring flow** — uses `signed-by` keyrings, not the deprecated `apt-key`.
 
 ---
@@ -132,7 +133,7 @@ You can inspect exactly what gets written:
 | `reversing` | radare2, gdb, ltrace, strace, binutils |
 | `vuln` | nikto, wapiti, nuclei, legion |
 
-Some packages (e.g. `metasploit-framework`, `nuclei`, `bettercap`) are not in plain Debian/Ubuntu repos and resolve only via Kali mode or their upstream installers. Ubunli reports any package it couldn't find instead of failing the whole run.
+Some packages (e.g. `metasploit-framework`, `nuclei`, `bettercap`, `wpscan`) are not in plain Debian/Ubuntu repos. When apt can't find one, Ubunli automatically falls back to the tool's **official upstream installer** (Rapid7's signed repo for Metasploit, GitHub release binaries for nuclei and bettercap into `/usr/local/bin`, and the `wpscan` Ruby gem). Only if both apt and the upstream fallback fail is a package reported as unavailable — the run never aborts.
 
 ---
 
@@ -147,6 +148,27 @@ Some packages (e.g. `metasploit-framework`, `nuclei`, `bettercap`) are not in pl
 ## Contributing
 
 Issues and pull requests are welcome. Please keep the safety model intact — any change that could let Kali packages override system packages without user consent will not be merged.
+
+---
+
+## Security
+
+Found a vulnerability in Ubunli itself? Please report it privately — see
+[`SECURITY.md`](SECURITY.md). Do not open a public issue for security problems.
+
+---
+
+## ⚖️ Trademarks &amp; Affiliation
+
+Ubunli is an **independent, community project**. It is **not affiliated with,
+endorsed by, or sponsored by** OffSec (Kali Linux), the Debian Project, or
+Canonical Ltd. (Ubuntu).
+
+"Kali Linux" and the Kali dragon logo are trademarks of OffSec. "Debian" and the
+Debian logo are trademarks of Software in the Public Interest, Inc. / the Debian
+Project. "Ubuntu" and the Ubuntu logo are trademarks of Canonical Ltd. All other
+tool names and logos are the property of their respective owners. They are used
+here only to indicate compatibility.
 
 ---
 

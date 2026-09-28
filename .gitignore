@@ -1,0 +1,39 @@
+# ── OS / editor cruft ────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+Desktop.ini
+*~
+*.swp
+*.swo
+.idea/
+.vscode/
+*.sublime-workspace
+*.sublime-project
+
+# ── Logs & temporary files ───────────────────────────────────────────
+*.log
+*.tmp
+*.bak
+*.orig
+tmp/
+temp/
+
+# ── Downloaded artifacts / build output ──────────────────────────────
+# (Ubunli downloads upstream binaries to /tmp at runtime, but guard
+#  against any stray local copies being committed.)
+*.zip
+*.tar.gz
+*.deb
+msfinstall
+nuclei
+bettercap
+build/
+dist/
+
+# ── Secrets / local config (never commit these) ──────────────────────
+*.key
+*.pem
+*.gpg
+.env
+.env.*
+secrets*

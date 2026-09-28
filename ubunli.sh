@@ -371,6 +371,96 @@ apt_install_target() {
   fi
 }
 
+# ═══════════════════════════════════════════════════════════════════════════
+#  Upstream fallback installers
+#  For tools that are NOT packaged in plain Debian/Ubuntu repos, install them
+#  directly from their official upstream source when apt can't find them.
+# ═══════════════════════════════════════════════════════════════════════════
+
+ensure_pkgs() {
+  # Quietly ensure helper packages are present (curl, unzip, etc.)
+  $SUDO apt-get install -y --no-install-recommends "$@" >/dev/null 2>&1 || true
+}
+
+gh_latest_tag() {
+  # Print the latest release tag (e.g. v3.3.0) for owner/repo.
+  curl -fsSL "https://api.github.com/repos/$1/releases/latest" \
+    | grep -oP '"tag_name":\s*"\K[^"]+' | head -n1
+}
+
+dl_arch() {
+  # Map dpkg arch -> the naming used by Go release binaries.
+  case "$ARCH" in
+    amd64) echo amd64 ;;
+    arm64) echo arm64 ;;
+    armhf) echo arm ;;
+    i386)  echo 386 ;;
+    *)     echo "$ARCH" ;;
+  esac
+}
+
+fallback_metasploit() {
+  # Rapid7's official omnibus installer (adds their signed APT repo).
+  ensure_pkgs curl ca-certificates gnupg
+  local f; f=$(mktemp)
+  curl -fsSL \
+    "https://raw.githubusercontent.com/rapid7/metasploit-omnibus/master/config/templates/metasploit-framework-wrappers/msfupdate.erb" \
+    -o "$f"
+  chmod 0755 "$f"
+  $SUDO "$f"
+  rm -f "$f"
+}
+
+fallback_nuclei() {
+  # ProjectDiscovery prebuilt release binary -> /usr/local/bin.
+  ensure_pkgs curl unzip ca-certificates
+  local a tag ver url tmp
+  a=$(dl_arch); tag=$(gh_latest_tag projectdiscovery/nuclei); ver="${tag#v}"
+  [[ -n "$tag" ]] || { echo "could not resolve latest nuclei release"; return 1; }
+  url="https://github.com/projectdiscovery/nuclei/releases/download/${tag}/nuclei_${ver}_linux_${a}.zip"
+  tmp=$(mktemp -d)
+  curl -fsSL "$url" -o "$tmp/nuclei.zip"
+  unzip -o "$tmp/nuclei.zip" -d "$tmp" >/dev/null
+  $SUDO install -m0755 "$tmp/nuclei" /usr/local/bin/nuclei
+  rm -rf "$tmp"
+}
+
+fallback_bettercap() {
+  # bettercap prebuilt release binary -> /usr/local/bin (+ runtime libs).
+  # Asset names look like: bettercap_linux_amd64_2.41.0.zip  (no 'v' in version,
+  # and 64-bit ARM is 'aarch64', not 'arm64').
+  ensure_pkgs curl unzip ca-certificates libpcap0.8 libusb-1.0-0
+  local a tag ver url tmp
+  case "$ARCH" in
+    amd64) a=amd64 ;;
+    arm64) a=aarch64 ;;
+    armhf) a=armhf ;;
+    *)     a="$ARCH" ;;
+  esac
+  tag=$(gh_latest_tag bettercap/bettercap); ver="${tag#v}"
+  [[ -n "$tag" ]] || { echo "could not resolve latest bettercap release"; return 1; }
+  url="https://github.com/bettercap/bettercap/releases/download/${tag}/bettercap_linux_${a}_${ver}.zip"
+  tmp=$(mktemp -d)
+  curl -fsSL "$url" -o "$tmp/bettercap.zip"
+  unzip -o "$tmp/bettercap.zip" -d "$tmp" >/dev/null
+  $SUDO install -m0755 "$tmp/bettercap" /usr/local/bin/bettercap
+  rm -rf "$tmp"
+}
+
+fallback_wpscan() {
+  # WPScan is a Ruby gem; install a build toolchain then the gem.
+  ensure_pkgs ruby ruby-dev build-essential ca-certificates \
+    libcurl4-openssl-dev libxml2 libxml2-dev libxslt1-dev zlib1g-dev
+  $SUDO gem install wpscan
+}
+
+declare -A FALLBACKS=(
+  [metasploit-framework]=fallback_metasploit
+  [nuclei]=fallback_nuclei
+  [bettercap]=fallback_bettercap
+  [wpscan]=fallback_wpscan
+)
+
 do_install() {
   local pkgs; pkgs=$(collect_packages)
   [[ -n "$pkgs" ]] || { warn "No packages resolved."; return; }
@@ -403,13 +493,34 @@ do_install() {
   done
 
   hr
+
+  # For anything apt couldn't install, try the official upstream installer.
+  if [[ ${#failed[@]} -gt 0 ]]; then
+    local recoverable=() still_failed=()
+    for p in "${failed[@]}"; do
+      [[ -n "${FALLBACKS[$p]:-}" ]] && recoverable+=("$p") || still_failed+=("$p")
+    done
+
+    if [[ ${#recoverable[@]} -gt 0 ]]; then
+      log "Trying upstream sources for: ${recoverable[*]}"
+      for p in "${recoverable[@]}"; do
+        if run_step "Installing ${p} (upstream)" "${FALLBACKS[$p]}"; then
+          :
+        else
+          still_failed+=("$p")
+        fi
+      done
+    fi
+    failed=("${still_failed[@]}")
+  fi
+
   if [[ ${#failed[@]} -eq 0 ]]; then
     ok "${C_BOLD}All selected tools installed successfully.${C_RESET}"
   else
     warn "Installed with ${#failed[@]} package(s) unavailable for your release/arch:"
     printf "   ${C_DIM}%s${C_RESET}\n" "${failed[*]}"
-    printf "${C_GREY}   (These may not be packaged for %s/%s. Try Kali mode, or\n" "$OS_ID" "$ARCH"
-    printf "   install them from source / their upstream project.)${C_RESET}\n"
+    printf "${C_GREY}   (Not packaged for %s/%s and no upstream fallback succeeded.\n" "$OS_ID" "$ARCH"
+    printf "   Check your network settings or install them manually.)${C_RESET}\n"
   fi
 }
 
