@@ -18,7 +18,6 @@ Only the latest release on the `main` branch receives security fixes.
 | Version | Supported |
 | ------- | :-------: |
 | Latest `main` / newest release | ✅ |
-| Older tags | ❌ |
 
 ## Reporting a Vulnerability
 
