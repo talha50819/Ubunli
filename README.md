@@ -75,6 +75,7 @@ Because everything comes from APT at runtime, Ubunli automatically reflects new 
 ## Installation &amp; Usage
 
 ```bash
+# 0. Install 
 sudo apt install git curl
 
 # 1. Clone the repository
