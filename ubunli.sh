@@ -190,7 +190,8 @@ Pin: release o=Kali
 Pin-Priority: 50
 EOF
   ok "Repository, pin, and key installed."
-  run_step "Refreshing package index" $SUDO apt-get update
+  SESSION_UPDATED=0
+  refresh_index
 }
 
 remove_kali_repo() {
@@ -201,10 +202,43 @@ remove_kali_repo() {
 }
 
 ensure_repo_ready() {
-  # Everything is discovered from Kali's index, so the repo must exist first.
-  if ! kali_repo_present; then
-    setup_kali_repo
+  # Everything is discovered from Kali's index, so the repo must exist AND its
+  # package index must be downloaded before we can list or install anything.
+  kali_repo_present || setup_kali_repo
+  refresh_index
+  if ! kali_index_ready; then
+    err "The Kali package index isn't available to APT."
+    err "A Kali mirror was probably unreachable during 'apt-get update'."
+    err "Check your network settings / proxy, then use menu option 3 to"
+    err "re-add the repository, and try again."
+    return 1
   fi
+  return 0
+}
+
+SESSION_UPDATED=0
+refresh_index() {
+  # Refresh the APT index once per session; surface failures clearly.
+  [[ "$SESSION_UPDATED" == "1" ]] && return 0
+  if run_step "Refreshing package index" $SUDO apt-get update; then
+    SESSION_UPDATED=1
+  else
+    warn "'apt-get update' reported errors — the Kali index may be incomplete."
+    warn "If a Kali mirror is unreachable, check your network settings."
+  fi
+}
+
+kali_index_ready() {
+  # True only if APT actually has the Kali repository in its index.
+  apt-cache policy 2>/dev/null \
+    | grep -qiE 'o=kali|kali-rolling|https?://[^ ]*kali'
+}
+
+has_candidate() {
+  # True if APT has an installable candidate version for the package.
+  local c
+  c=$(apt-cache policy "$1" 2>/dev/null | awk '/Candidate:/{print $2}')
+  [[ -n "$c" && "$c" != "(none)" ]]
 }
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -278,6 +312,10 @@ install_packages() {
 
   local failed=() p
   for p in "${pkgs[@]}"; do
+    if ! has_candidate "$p"; then
+      warn "No candidate for ${p} (not in index for your release/arch) — skipping."
+      failed+=("$p"); continue
+    fi
     if run_step "Installing ${p}" \
          $SUDO apt-get install -y --no-install-recommends -t kali-rolling "$p"; then :; else
       failed+=("$p")
@@ -306,6 +344,19 @@ install_metapackage() {
   local pkg="$1" label="$2"
   banner
   box "$label"
+
+  if ! has_candidate "$pkg"; then
+    refresh_index
+    if ! has_candidate "$pkg"; then
+      err "APT has no installable candidate for '${pkg}'."
+      err "The Kali index isn't loaded for your system. Likely causes:"
+      err "  • a Kali mirror was unreachable during 'apt-get update'"
+      err "  • the repository wasn't added (menu option 3)"
+      err "Check your network settings, re-add the repo, then retry."
+      return 1
+    fi
+  fi
+
   printf "${C_GREY} '%s' is an official Kali metapackage; APT resolves everything it\n" "$pkg"
   printf " pulls in. This can be a large download.${C_RESET}\n"
   [[ "$pkg" == "kali-linux-everything" ]] && {
@@ -372,7 +423,7 @@ pick_tools_from_category() {
 }
 
 tools_flow() {
-  ensure_repo_ready
+  ensure_repo_ready || { pause; return; }
   banner
   box "LOADING OFFICIAL TOOL CATEGORIES"
   load_list '^kali-tools-'
@@ -410,7 +461,7 @@ tools_flow() {
 # ═══════════════════════════════════════════════════════════════════════════
 
 system_flow() {
-  ensure_repo_ready
+  ensure_repo_ready || { pause; return; }
   banner
   box "LOADING SYSTEM COLLECTIONS"
   load_list '^kali-linux-'

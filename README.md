@@ -67,7 +67,7 @@ Because everything comes from APT at runtime, Ubunli automatically reflects new 
 ## Requirements
 
 - Debian or Ubuntu (latest releases) or a close derivative (Pop!\_OS, Mint, Zorin, elementary).
-- `bash`, `sudo`, `curl`, `gpg`, and standard tools (`apt-get`, `apt-cache`, `dpkg-query`, `awk`, `sed`, `grep`) — checked at startup.
+- `bash`, `sudo`, `git`, `curl`, `gpg`, and standard tools (`apt-get`, `apt-git` `apt-cache`, `dpkg-query`, `awk`, `sed`, `grep`) — checked at startup.
 - An internet connection (the whole catalog is fetched online).
 
 ---
@@ -75,6 +75,8 @@ Because everything comes from APT at runtime, Ubunli automatically reflects new 
 ## Installation &amp; Usage
 
 ```bash
+sudo apt install git curl
+
 # 1. Clone the repository
 git clone https://github.com/talha50819/Ubunli.git
 cd Ubunli
