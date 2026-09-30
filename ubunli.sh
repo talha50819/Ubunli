@@ -442,10 +442,65 @@ write_kali_list() {
 }
 
 # Upgrade source lists written by older Ubunli versions (no arch= restriction).
+# Also picks up the mirror a previous run switched to, so it is preserved.
 migrate_kali_list() {
-  [[ -f "$KALI_LIST" ]] && ! grep -q 'arch=' "$KALI_LIST" || return 0
+  [[ -f "$KALI_LIST" ]] || return 0
+  local url; url=$(awk '/^deb /{for (i = 2; i <= NF; i++) if ($i ~ /^https?:\/\//) { print $i; exit }}' "$KALI_LIST")
+  [[ -n "$url" ]] && KALI_REPO="$url"
+  grep -q 'arch=' "$KALI_LIST" && return 0
   log "Restricting the Kali repository to ${ARCH} (skips unneeded foreign-arch indexes)"
   write_kali_list; SESSION_UPDATED=0
+}
+
+# ── Mirror health ────────────────────────────────────────────────────────────
+# http.kali.org redirects each file separately, and Kali's CDN can serve an
+# InRelease that is hours older than the Packages file a mirror serves. APT
+# then fails with "File has unexpected size … Mirror sync in progress?" on
+# every retry. These helpers find a mirror whose files agree with each other.
+
+# mirror_consistent <base-url>  — for every component, the Packages.gz size
+# listed in InRelease matches the size the mirror actually serves.
+mirror_consistent() {
+  local base="$1" ir comp f want got
+  ir=$(curl -fsSL --max-time 15 "$base/dists/kali-rolling/InRelease" 2>/dev/null) || return 1
+  for comp in main contrib non-free non-free-firmware; do
+    f="${comp}/binary-${ARCH}/Packages.gz"
+    want=$(awk -v f="$f" \
+      '/^SHA256:/ { s = 1; next } s && /^[^ ]/ { s = 0 } s && $3 == f { print $2; exit }' <<<"$ir")
+    [[ -n "$want" ]] || { [[ "$comp" == main ]] && return 1; continue; }
+    got=$(curl -fsSIL --max-time 15 "$base/dists/kali-rolling/$f" 2>/dev/null \
+      | tr -d '\r' | awk -F': ' 'tolower($1) == "content-length" { v = $2 } END { print v }')
+    [[ "$want" == "$got" ]] || return 1
+  done
+}
+
+# Official Kali mirrors, nearest first (from Kali's mirrorbits redirector),
+# with a few well-known ones as a fallback.
+kali_mirrors() {
+  {
+    curl -fsSL --max-time 15 \
+      "https://http.kali.org/kali/dists/kali-rolling/main/binary-${ARCH}/Packages.gz?mirrorlist" 2>/dev/null \
+      | grep -oE 'https://[A-Za-z0-9./_-]+/kali/' | sed 's#/$##'
+    printf '%s\n' https://archive-4.kali.org/kali https://ftp.halifax.rwth-aachen.de/kali \
+      https://eu.mirror.ionos.com/linux/distributions/kali/kali https://ftp.jaist.ac.jp/pub/Linux/kali
+  } | awk '!seen[$0]++' | head -n 12
+}
+
+# Switch the Kali source to the first consistent mirror. Returns 1 if none.
+switch_kali_mirror() {
+  local m
+  log "Looking for an up-to-date Kali mirror"
+  while IFS= read -r m; do
+    [[ "$m" == "$KALI_REPO" ]] && continue
+    if mirror_consistent "$m"; then
+      ok "Using mirror ${C_BOLD}${m}${C_RESET}"
+      KALI_REPO="$m"; write_kali_list; SESSION_UPDATED=0
+      return 0
+    fi
+    printf "  ${C_GREY}%s %s is out of sync, skipping${C_RESET}\n" "$G_DOT" "$m"
+  done < <(kali_mirrors)
+  warn "No consistent Kali mirror found right now."
+  return 1
 }
 
 install_kali_key() {
@@ -520,9 +575,15 @@ refresh_index() {
     (( attempt == tries )) && break
     delay=$(( attempt * 15 ))
     if grep -qiE 'unexpected size|mirror sync|hash sum mismatch|clearsigned|not valid yet|bad header|connection reset|50[23] ' "$LAST_LOG"; then
-      log "Kali mirror is mid-sync — clearing partial downloads, retrying in ${delay}s (attempt $((attempt + 1))/${tries})"
       $SUDO sh -c 'rm -rf /var/lib/apt/lists/partial/*' 2>/dev/null || true
-      sleep "$delay"
+      # A Kali file is inconsistent: after one plain retry, move to a mirror
+      # whose files agree (the CDN can stay stale for hours).
+      if (( attempt >= 2 )) && grep -qiE 'fetch [^ ]*kali' "$LAST_LOG" && switch_kali_mirror; then
+        log "Retrying with the new mirror (attempt $((attempt + 1))/${tries})"
+      else
+        log "Kali mirror is mid-sync — retrying in ${delay}s (attempt $((attempt + 1))/${tries})"
+        sleep "$delay"
+      fi
     elif grep -qiE 'temporary failure resolving|could not resolve|network is unreachable|connection timed out|unable to connect|connection failed' "$LAST_LOG"; then
       wait_for_network || break
     elif grep -qiE 'could not get lock|unable to acquire the dpkg|is another process using it' "$LAST_LOG"; then
@@ -823,6 +884,10 @@ show_status() {
   printf "  ${C_CYAN}Arch${C_RESET}       : %s\n" "$ARCH"
   printf "  ${C_CYAN}Kali repo${C_RESET}  : %s\n" \
     "$(kali_repo_present && printf "${C_GREEN}configured (pinned)${C_RESET}" || printf "${C_GREY}not configured${C_RESET}")"
+  if kali_repo_present; then
+    migrate_kali_list
+    printf "  ${C_CYAN}Kali mirror${C_RESET}: %s\n" "$KALI_REPO"
+  fi
   printf "  ${C_CYAN}Disk (/)${C_RESET}   : %s free\n" \
     "$(df -Ph / 2>/dev/null | awk 'NR==2{print $4}')"
   printf "  ${C_CYAN}Privileges${C_RESET} : %s\n" "${SUDO:-root}"
