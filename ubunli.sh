@@ -127,22 +127,50 @@ pulse_bar() {
     "$(repeat "$G_EMPTY" "$((span - pos))")"
 }
 
-# apt_progress <logfile>  ->  0-100 from APT's Status-Fd lines, or -1.
-# Download (dlstatus) maps to 0-30%, unpack/configure (pmstatus) to 30-100%.
-apt_progress() {
-  local line f
-  line=$(grep -aE '^(dl|pm)status:' "$1" 2>/dev/null | tail -n 1) || true
-  [[ -n "$line" ]] || { echo -1; return; }
-  local IFS=':'; read -r -a f <<<"$line"
-  # Field 1 is an id/package (package may be arch-qualified); the percentage
-  # is the first purely numeric field after it.
-  local k p=""
-  for ((k = 2; k < ${#f[@]}; k++)); do
-    [[ "${f[$k]}" =~ ^[0-9]+(\.[0-9]+)?$ ]] && { p="${f[$k]%%.*}"; break; }
-  done
-  [[ -n "$p" ]] || { echo -1; return; }
-  if [[ "${f[0]}" == dlstatus ]]; then echo $(( p * 30 / 100 ))
-  else echo $(( 30 + p * 70 / 100 )); fi
+# step_status <logfile>  ->  "<percent>\t<detail>\t<summary>"
+#   percent: 0-100 from APT's Status-Fd lines, or -1 if unknown.
+#            Download (dlstatus) maps to 0-30%, unpack/configure (pmstatus) to 30-100%.
+#   detail : what is happening right now, e.g. "Downloading nmap · 12/345"
+#            or "Setting up nmap (7.94) · 120/345 set up".
+#   summary: totals for the finished step, e.g. "345 downloaded · 340 set up".
+step_status() {
+  awk '
+    function isarch(a) { return a ~ /^(amd64|i386|arm64|armhf|armel|all|ppc64el|s390x|riscv64|mips64el|loong64)$/ }
+    /^(dl|pm)status:/ { last = $0; next }
+    /^Get:[0-9]+ / {
+      gets++; getn = substr($1, 5) + 0
+      # "Get:N <url> <suite/comp> [arch] <pkg> [arch] <ver> [size]"
+      item = isarch($4) ? $5 : $4
+      if ($0 ~ /(In)?Release|Packages|Translation|Contents|Sources/ && NF <= 6) item = $3 " " $4
+      next
+    }
+    /^[0-9]+ upgraded, [0-9]+ newly installed/ { total = $1 + $3; next }
+    /^Setting up / { setup++; next }
+    END {
+      pct = -1; detail = ""; sep = " \xc2\xb7 "
+      if (last != "") {
+        n = split(last, f, ":")
+        for (k = 3; k <= n; k++) if (f[k] ~ /^[0-9]+(\.[0-9]+)?$/) break
+        if (k <= n) {
+          p = int(f[k]); desc = ""
+          for (j = k + 1; j <= n; j++) desc = desc (j > k + 1 ? ":" : "") f[j]
+          if (f[1] == "dlstatus") {
+            pct = int(p * 30 / 100)
+            dltot = (match(desc, /of [0-9]+/) ? substr(desc, RSTART + 3, RLENGTH - 3) : "")
+            detail = "Downloading " (item != "" ? item : "packages")
+            if (getn > 0) detail = detail sep getn (dltot != "" ? "/" dltot : "")
+          } else {
+            pct = 30 + int(p * 70 / 100)
+            detail = desc
+            if (total > 0) detail = detail sep (setup + 0) "/" total " set up"
+          }
+        }
+      } else if (item != "") detail = "Fetching " item
+      summary = ""
+      if (gets > 0)  summary = gets " downloaded"
+      if (setup > 0) summary = summary (summary != "" ? sep : "") setup " set up"
+      printf "%d\t%s\t%s\n", pct, detail, summary
+    }' "$1" 2>/dev/null || printf -- '-1\t\t\n'
 }
 
 # Durations of past steps, used to estimate steps that report no progress.
@@ -172,13 +200,18 @@ run_step() {
   local start=$SECONDS
 
   ( "$@" >"$logf" 2>&1 ) &
-  local pid=$! tick=0 pct=-1 p el eta bar short="$msg"
+  local pid=$! tick=0 pct=-1 p el eta bar detail="" summary="" short="$msg"
   (( ${#short} > 26 )) && short="${short:0:25}${G_ELL}"
+  local dmax=$(( ${COLUMNS:-$(tput cols 2>/dev/null || echo 80)} - 6 ))
 
   if [[ "$COLORS" -ge 8 ]]; then
+    # Two live lines: the progress bar, then what is being downloaded/installed.
+    printf '\n\e[1A'
     while kill -0 "$pid" 2>/dev/null; do
       tick=$((tick + 1))
-      p=$(apt_progress "$logf"); (( p > pct )) && pct=$p
+      IFS=$'\t' read -r p detail summary < <(step_status "$logf") || true
+      (( p > pct )) && pct=$p
+      (( ${#detail} > dmax )) && detail="${detail:0:$((dmax - 1))}${G_ELL}"
       el=$(( SECONDS - start ))
       if (( pct > 0 )); then
         bar=$(progress_bar "$pct")
@@ -189,10 +222,11 @@ run_step() {
         elif [[ -n "$hint" ]]; then eta="almost done"
         else eta="estimating${G_ELL}"; fi
       fi
-      printf "\r${C_CYAN}%s${C_RESET} %-26s ${C_PURP}%s${C_RESET} ${C_BOLD}%4s${C_RESET} ${C_GREY}%s ${G_DOT} %s${C_RESET}%s" \
+      printf "\r${C_CYAN}%s${C_RESET} %-26s ${C_PURP}%s${C_RESET} ${C_BOLD}%4s${C_RESET} ${C_GREY}%s ${G_DOT} %s${C_RESET}%s\n" \
         "${frames:$((tick % ${#frames})):1}" "$short" "$bar" \
         "$( (( pct >= 0 )) && printf '%d%%' "$pct" || printf -- '--')" \
         "$(fmt_time "$el")" "$eta" "$CLR"
+      printf "  ${C_GREY}%s %s${C_RESET}%s\e[1A\r" "$G_ARROW" "${detail:-working${G_ELL}}" "$CLR"
       sleep 0.2
     done
   else
@@ -203,11 +237,14 @@ run_step() {
   local rc=0; wait "$pid" || rc=$?
   el=$(( SECONDS - start ))
   if (( rc == 0 )); then
-    printf "\r${C_GREEN}%s${C_RESET} %s ${C_GREY}(%s)${C_RESET}%s\n" "$G_OK" "$msg" "$(fmt_time "$el")" "$CLR"
+    # The trailing $CLR wipes the "what's happening" line below the bar.
+    printf "\r${C_GREEN}%s${C_RESET} %s ${C_GREY}(%s)${C_RESET}%s\n%s" "$G_OK" "$msg" "$(fmt_time "$el")" "$CLR" "$CLR"
+    IFS=$'\t' read -r _ _ summary < <(step_status "$logf") || true
+    [[ -n "$summary" ]] && printf "  ${C_GREY}%s %s${C_RESET}\n" "$G_ARROW" "$summary"
     step_record "$key" "$el"
     rm -f "$logf"; return 0
   else
-    printf "\r${C_RED}%s${C_RESET} %s ${C_GREY}(%s)${C_RESET}%s\n" "$G_ERR" "$msg" "$(fmt_time "$el")" "$CLR"
+    printf "\r${C_RED}%s${C_RESET} %s ${C_GREY}(%s)${C_RESET}%s\n%s" "$G_ERR" "$msg" "$(fmt_time "$el")" "$CLR" "$CLR"
     printf "${C_DIM}%s${C_RESET}\n" "$(grep -avE '^(dl|pm|media)status:' "$logf" | tail -n 12)"
     cp -f "$logf" "$LAST_LOG" 2>/dev/null || true
     rm -f "$logf"; return 1
@@ -229,7 +266,7 @@ overall_progress() {
 # backgrounded step, existing configs are kept) and machine-readable progress
 # on stdout so run_step can draw a real progress bar.
 apt_get() {
-  $SUDO env DEBIAN_FRONTEND=noninteractive apt-get \
+  $SUDO env DEBIAN_FRONTEND=noninteractive LC_ALL=C.UTF-8 apt-get \
     -o APT::Status-Fd=1 -o Dpkg::Use-Pty=0 \
     -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@"
 }
