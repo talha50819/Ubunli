@@ -46,12 +46,25 @@ fi
 if [[ "${LANG:-}" == *UTF-8* || "${LC_ALL:-}" == *UTF-8* ]]; then
   G_OK="✓"; G_ERR="✗"; G_ARROW="➜"; G_DOT="•"; G_SPARK="✦"
   G_TL="╭"; G_TR="╮"; G_BL="╰"; G_BR="╯"; G_H="─"; G_V="│"
+  G_FULL="█"; G_EMPTY="░"; G_ELL="…"
 else
   G_OK="+"; G_ERR="x"; G_ARROW=">"; G_DOT="*"; G_SPARK="*"
   G_TL="+"; G_TR="+"; G_BL="+"; G_BR="+"; G_H="-"; G_V="|"
+  G_FULL="#"; G_EMPTY="-"; G_ELL="..."
 fi
 
+# Clear-to-end-of-line (only meaningful on a real terminal).
+if [[ "$COLORS" -ge 8 ]]; then CLR=$'\e[K'; else CLR=''; fi
+
 WIDTH=66
+BAR_WIDTH=20
+
+# repeat <string> <count>  — multibyte-safe (tr mangles UTF-8 glyphs).
+repeat() {
+  local out="" i
+  for ((i = 0; i < $2; i++)); do out+="$1"; done
+  printf '%s' "$out"
+}
 
 # ═══════════════════════════════════════════════════════════════════════════
 #  Logging
@@ -63,11 +76,11 @@ warn() { printf '%s %s\n' "${C_YELLOW}!${C_RESET}" "$*" >&2; }
 err()  { printf '%s %s\n' "${C_RED}${G_ERR}${C_RESET}" "$*" >&2; }
 die()  { err "$*"; exit 1; }
 
-hr() { printf "${C_GREY}%*s${C_RESET}\n" "$WIDTH" '' | tr ' ' "$G_H"; }
+hr() { printf "${C_GREY}%s${C_RESET}\n" "$(repeat "$G_H" "$WIDTH")"; }
 
 box() {
   local title="$1" pad line
-  line=$(printf "%*s" "$((WIDTH - 2))" '' | tr ' ' "$G_H")
+  line=$(repeat "$G_H" "$((WIDTH - 2))")
   printf "${C_PURP}%s%s%s${C_RESET}\n" "$G_TL" "$line" "$G_TR"
   pad=$(( (WIDTH - 2 - ${#title}) / 2 ))
   printf "${C_PURP}%s${C_RESET}%*s${C_BOLD}${C_ACCENT}%s${C_RESET}%*s${C_PURP}%s${C_RESET}\n" \
@@ -87,32 +100,241 @@ EOF
   printf "${C_RESET}${C_GREY}   Ubunli ${G_DOT} dynamic Kali metapackage installer${C_RESET}\n\n"
 }
 
+# ═══════════════════════════════════════════════════════════════════════════
+#  Progress bars & time estimates
+# ═══════════════════════════════════════════════════════════════════════════
+
+# fmt_time <seconds>  ->  "42s" / "3m07s" / "1h05m"
+fmt_time() {
+  local s=$1
+  if   (( s >= 3600 )); then printf '%dh%02dm' $((s / 3600)) $((s % 3600 / 60))
+  elif (( s >= 60 ));   then printf '%dm%02ds' $((s / 60)) $((s % 60))
+  else                       printf '%ds' "$s"
+  fi
+}
+
+# progress_bar <percent>  ->  "██████░░░░░░░░░░░░░░"
+progress_bar() {
+  local fill=$(( $1 * BAR_WIDTH / 100 ))
+  printf '%s%s' "$(repeat "$G_FULL" "$fill")" "$(repeat "$G_EMPTY" "$((BAR_WIDTH - fill))")"
+}
+
+# pulse_bar <tick>  ->  a block bouncing across the bar (unknown progress)
+pulse_bar() {
+  local blk=4 span=$(( BAR_WIDTH - 4 )) pos
+  pos=$(( $1 % (2 * span) )); (( pos > span )) && pos=$(( 2 * span - pos ))
+  printf '%s%s%s' "$(repeat "$G_EMPTY" "$pos")" "$(repeat "$G_FULL" "$blk")" \
+    "$(repeat "$G_EMPTY" "$((span - pos))")"
+}
+
+# apt_progress <logfile>  ->  0-100 from APT's Status-Fd lines, or -1.
+# Download (dlstatus) maps to 0-30%, unpack/configure (pmstatus) to 30-100%.
+apt_progress() {
+  local line f
+  line=$(grep -aE '^(dl|pm)status:' "$1" 2>/dev/null | tail -n 1) || true
+  [[ -n "$line" ]] || { echo -1; return; }
+  local IFS=':'; read -r -a f <<<"$line"
+  # Field 1 is an id/package (package may be arch-qualified); the percentage
+  # is the first purely numeric field after it.
+  local k p=""
+  for ((k = 2; k < ${#f[@]}; k++)); do
+    [[ "${f[$k]}" =~ ^[0-9]+(\.[0-9]+)?$ ]] && { p="${f[$k]%%.*}"; break; }
+  done
+  [[ -n "$p" ]] || { echo -1; return; }
+  if [[ "${f[0]}" == dlstatus ]]; then echo $(( p * 30 / 100 ))
+  else echo $(( 30 + p * 70 / 100 )); fi
+}
+
+# Durations of past steps, used to estimate steps that report no progress.
+STEP_HISTORY="${XDG_CACHE_HOME:-$HOME/.cache}/ubunli/step-times"
+step_hint() {
+  [[ -r "$STEP_HISTORY" ]] || return 0
+  awk -F'\t' -v k="$1" '$1 == k { v = $2 } END { if (v != "") print v }' "$STEP_HISTORY"
+}
+step_record() {
+  mkdir -p "$(dirname "$STEP_HISTORY")" 2>/dev/null || return 0
+  { awk -F'\t' -v k="$1" '$1 != k' "$STEP_HISTORY" 2>/dev/null | tail -n 300
+    printf '%s\t%s\n' "$1" "$2"; } >"$STEP_HISTORY.tmp" 2>/dev/null \
+    && mv -f "$STEP_HISTORY.tmp" "$STEP_HISTORY" 2>/dev/null || true
+}
+
+# The log of the most recent failed step (read by the auto-repair logic).
+LAST_LOG=$(mktemp)
+trap 'rm -f "$LAST_LOG"' EXIT
+
 run_step() {
   local msg="$1"; shift
   local logf; logf=$(mktemp)
   local frames='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
   [[ "${LANG:-}" == *UTF-8* ]] || frames='|/-\'
+  local key="${msg#\[*\] }"             # "[3/9] Installing x" -> "Installing x"
+  local hint; hint=$(step_hint "$key")
+  local start=$SECONDS
 
   ( "$@" >"$logf" 2>&1 ) &
-  local pid=$! i=0
+  local pid=$! tick=0 pct=-1 p el eta bar short="$msg"
+  (( ${#short} > 26 )) && short="${short:0:25}${G_ELL}"
+
   if [[ "$COLORS" -ge 8 ]]; then
     while kill -0 "$pid" 2>/dev/null; do
-      i=$(( (i + 1) % ${#frames} ))
-      printf "\r${C_CYAN}%s${C_RESET} %s" "${frames:$i:1}" "$msg"
-      sleep 0.1
+      tick=$((tick + 1))
+      p=$(apt_progress "$logf"); (( p > pct )) && pct=$p
+      el=$(( SECONDS - start ))
+      if (( pct > 0 )); then
+        bar=$(progress_bar "$pct")
+        eta="~$(fmt_time $(( el * (100 - pct) / pct ))) left"
+      else
+        bar=$(pulse_bar "$tick")
+        if [[ -n "$hint" ]] && (( hint > el )); then eta="~$(fmt_time $((hint - el))) left"
+        elif [[ -n "$hint" ]]; then eta="almost done"
+        else eta="estimating${G_ELL}"; fi
+      fi
+      printf "\r${C_CYAN}%s${C_RESET} %-26s ${C_PURP}%s${C_RESET} ${C_BOLD}%4s${C_RESET} ${C_GREY}%s ${G_DOT} %s${C_RESET}%s" \
+        "${frames:$((tick % ${#frames})):1}" "$short" "$bar" \
+        "$( (( pct >= 0 )) && printf '%d%%' "$pct" || printf -- '--')" \
+        "$(fmt_time "$el")" "$eta" "$CLR"
+      sleep 0.2
     done
   else
-    printf "%s ... " "$msg"; wait "$pid" 2>/dev/null || true
+    printf "%s%s " "$msg" "$([[ -n "$hint" ]] && printf ' (~%s)' "$(fmt_time "$hint")")"
+    printf "... "
   fi
 
-  if wait "$pid"; then
-    printf "\r${C_GREEN}%s${C_RESET} %s%*s\n" "$G_OK" "$msg" 6 ''
+  local rc=0; wait "$pid" || rc=$?
+  el=$(( SECONDS - start ))
+  if (( rc == 0 )); then
+    printf "\r${C_GREEN}%s${C_RESET} %s ${C_GREY}(%s)${C_RESET}%s\n" "$G_OK" "$msg" "$(fmt_time "$el")" "$CLR"
+    step_record "$key" "$el"
     rm -f "$logf"; return 0
   else
-    printf "\r${C_RED}%s${C_RESET} %s\n" "$G_ERR" "$msg"
-    printf "${C_DIM}%s${C_RESET}\n" "$(tail -n 12 "$logf")"
+    printf "\r${C_RED}%s${C_RESET} %s ${C_GREY}(%s)${C_RESET}%s\n" "$G_ERR" "$msg" "$(fmt_time "$el")" "$CLR"
+    printf "${C_DIM}%s${C_RESET}\n" "$(grep -avE '^(dl|pm|media)status:' "$logf" | tail -n 12)"
+    cp -f "$logf" "$LAST_LOG" 2>/dev/null || true
     rm -f "$logf"; return 1
   fi
+}
+
+# overall_progress <done> <total> <start-seconds>  — multi-step summary line.
+overall_progress() {
+  local done=$1 total=$2 el=$(( SECONDS - $3 )) pct eta
+  pct=$(( done * 100 / total ))
+  if (( done == 0 )); then eta="estimating${G_ELL}"
+  elif (( done == total )); then eta="done"
+  else eta="~$(fmt_time $(( el * (total - done) / done ))) left"; fi
+  printf "\n  ${C_BOLD}Overall${C_RESET} ${C_ACCENT}%s${C_RESET} ${C_BOLD}%d/%d${C_RESET} (%d%%) ${C_GREY}%s elapsed ${G_DOT} %s${C_RESET}\n" \
+    "$(progress_bar "$pct")" "$done" "$total" "$pct" "$(fmt_time "$el")" "$eta"
+}
+
+# apt-get wrapper: non-interactive (no debconf / conffile prompts can hang a
+# backgrounded step, existing configs are kept) and machine-readable progress
+# on stdout so run_step can draw a real progress bar.
+apt_get() {
+  $SUDO env DEBIAN_FRONTEND=noninteractive apt-get \
+    -o APT::Status-Fd=1 -o Dpkg::Use-Pty=0 \
+    -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@"
+}
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  Auto-repair — diagnose a failed step, fix the cause, and retry
+# ═══════════════════════════════════════════════════════════════════════════
+
+MAX_ATTEMPTS=3
+
+wait_for_apt_lock() {
+  local waited=0 max=300
+  if ! command -v fuser >/dev/null 2>&1; then
+    log "Waiting 20s for the APT/dpkg lock to be released"; sleep 20; return 0
+  fi
+  while $SUDO fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock \
+          /var/lib/apt/lists/lock /var/cache/apt/archives/lock >/dev/null 2>&1; do
+    if (( waited >= max )); then
+      printf "\n"; warn "APT is still locked by another process after $(fmt_time $max)."; return 1
+    fi
+    printf "\r${C_YELLOW}%s${C_RESET} Another package manager is running ${G_DOT} waiting %s%s" \
+      "$G_ARROW" "$(fmt_time $waited)" "$CLR"
+    sleep 3; waited=$((waited + 3))
+  done
+  printf "\r%s" "$CLR"; ok "APT lock is free."
+}
+
+wait_for_network() {
+  local waited=0 max=90
+  until curl -fsSI --max-time 5 -o /dev/null "$KALI_REPO/"; do
+    if (( waited >= max )); then
+      printf "\n"; warn "Kali mirror still unreachable after $(fmt_time $max). Check your network."; return 1
+    fi
+    printf "\r${C_YELLOW}%s${C_RESET} Network/mirror unreachable ${G_DOT} retrying (%s)%s" \
+      "$G_ARROW" "$(fmt_time $waited)" "$CLR"
+    sleep 5; waited=$((waited + 5))
+  done
+  printf "\r%s" "$CLR"; ok "Network is reachable."
+}
+
+# repair_from_log <logfile>  — returns 0 if at least one fix was applied.
+repair_from_log() {
+  local f; f=$(mktemp); cp -f "$1" "$f"   # fix steps may overwrite LAST_LOG
+  local applied=1 matched=1
+  has() { grep -qiE "$1" "$f"; }
+
+  printf "\n${C_YELLOW}${G_SPARK} Diagnosing the failure and applying fixes${C_RESET}\n"
+
+  if has 'could not get lock|unable to acquire the dpkg|is another process using it|dpkg frontend lock'; then
+    matched=0; wait_for_apt_lock && applied=0
+  fi
+  if has 'temporary failure resolving|could not resolve|network is unreachable|connection timed out|unable to connect|connection failed'; then
+    matched=0; wait_for_network && applied=0
+  fi
+  if has 'no space left on device'; then
+    matched=0; run_step "Cleaning APT download cache" $SUDO apt-get clean && applied=0
+    warn "Disk is low: $(df -Ph / 2>/dev/null | awk 'NR==2{print $4}') free on /."
+  fi
+  if has 'NO_PUBKEY|EXPKEYSIG|KEYEXPIRED|signatures couldn.t be verified|is not signed'; then
+    matched=0; install_kali_key && applied=0
+  fi
+  if has 'hash sum mismatch|failed to fetch|404 +not found|unexpected size|mirror sync in progress|not valid yet|unable to locate package|has no installation candidate|NO_PUBKEY|EXPKEYSIG'; then
+    matched=0
+    run_step "Clearing partial downloads" $SUDO sh -c 'rm -rf /var/lib/apt/lists/partial/* /var/cache/apt/archives/partial/*' || true
+    SESSION_UPDATED=0; refresh_index && applied=0
+  fi
+  if has 'dpkg was interrupted|dpkg --configure -a|sub-process /usr/bin/dpkg returned an error|dpkg: error processing'; then
+    matched=0; run_step "Finishing interrupted package setup" $SUDO dpkg --configure -a && applied=0
+  fi
+  if has 'unmet dependencies|broken packages|--fix-broken|held broken|but it is not (going to be )?installed|dpkg: error processing|trying to overwrite'; then
+    matched=0; run_step "Repairing broken dependencies" apt_get install -f -y && applied=0
+  fi
+  if has 'trying to overwrite'; then
+    warn "A Kali package conflicts with a file owned by a system package."
+    warn "Ubunli will not force-overwrite system files; the retry may still fail."
+  fi
+
+  if (( matched != 0 )); then
+    # Unknown error: run the standard APT/dpkg recovery sequence.
+    log "Unrecognised error — running the standard recovery sequence"
+    run_step "Finishing interrupted package setup" $SUDO dpkg --configure -a && applied=0
+    run_step "Repairing broken dependencies" apt_get install -f -y && applied=0
+  fi
+
+  rm -f "$f"
+  return "$applied"
+}
+
+# run_with_repair <message> <command...>  — run_step, auto-fix and retry on failure.
+run_with_repair() {
+  local msg="$1"; shift
+  local attempt=1
+  while true; do
+    run_step "$msg" "$@" && return 0
+    if (( attempt >= MAX_ATTEMPTS )); then
+      err "Still failing after ${attempt} attempts — giving up on this step."
+      return 1
+    fi
+    if ! repair_from_log "$LAST_LOG"; then
+      err "No automatic fix could be applied."
+      return 1
+    fi
+    attempt=$((attempt + 1))
+    log "Retrying ${C_BOLD}${msg}${C_RESET} (attempt ${attempt}/${MAX_ATTEMPTS})"
+  done
 }
 
 pause() { read -rp "$(printf "\n${C_GREY}Press Enter to continue...${C_RESET}")" _; }
@@ -126,6 +348,8 @@ require_root() {
   if [[ $EUID -ne 0 ]]; then
     command -v sudo >/dev/null 2>&1 || die "Run as root or install sudo."
     SUDO="sudo"
+    # Ask for the password now, before any progress line can hide the prompt.
+    sudo -v || die "sudo authentication failed."
   fi
 }
 
@@ -166,19 +390,24 @@ KALI_REPO="https://http.kali.org/kali"
 
 kali_repo_present() { [[ -f "$KALI_LIST" && -f "$KALI_PIN" ]]; }
 
+install_kali_key() {
+  log "Fetching Kali archive signing key"
+  curl -fsSL --retry 3 "$KALI_KEY_URL" | $SUDO gpg --batch --yes --dearmor -o "$KALI_KEYRING" 2>/dev/null \
+    || return 1
+  $SUDO chmod 0644 "$KALI_KEYRING"
+}
+
 setup_kali_repo() {
   kali_repo_present && return 0
   box "ADDING KALI REPOSITORY (PINNED / SAFE)"
   printf "${C_GREY} Kali packages are pinned BELOW your system's, so they never install\n"
   printf " or upgrade automatically — only when you explicitly choose them.${C_RESET}\n"
   hr
-  run_step "Installing prerequisites" \
-    $SUDO apt-get install -y --no-install-recommends ca-certificates curl gnupg apt-transport-https
+  run_with_repair "Installing prerequisites" \
+    apt_get install -y --no-install-recommends ca-certificates curl gnupg apt-transport-https \
+    || die "Could not install prerequisites."
 
-  log "Fetching Kali archive signing key"
-  curl -fsSL "$KALI_KEY_URL" | $SUDO gpg --dearmor -o "$KALI_KEYRING" 2>/dev/null \
-    || die "Failed to fetch/verify Kali signing key. Check your network settings."
-  $SUDO chmod 0644 "$KALI_KEYRING"
+  install_kali_key || die "Failed to fetch/verify Kali signing key. Check your network settings."
 
   printf 'deb [signed-by=%s] %s kali-rolling main contrib non-free non-free-firmware\n' \
     "$KALI_KEYRING" "$KALI_REPO" | $SUDO tee "$KALI_LIST" >/dev/null
@@ -197,7 +426,7 @@ EOF
 remove_kali_repo() {
   box "REMOVING KALI REPOSITORY"
   $SUDO rm -f "$KALI_LIST" "$KALI_PIN" "$KALI_KEYRING"
-  run_step "Refreshing package index" $SUDO apt-get update
+  run_step "Refreshing package index" apt_get update
   ok "Kali repository, pin, and key removed. Installed tools remain."
 }
 
@@ -220,7 +449,7 @@ SESSION_UPDATED=0
 refresh_index() {
   # Refresh the APT index once per session; surface failures clearly.
   [[ "$SESSION_UPDATED" == "1" ]] && return 0
-  if run_step "Refreshing package index" $SUDO apt-get update; then
+  if run_step "Refreshing package index" apt_get update; then
     SESSION_UPDATED=1
   else
     warn "'apt-get update' reported errors — the Kali index may be incomplete."
@@ -311,19 +540,22 @@ install_packages() {
   printf "${C_YELLOW}Proceed? [y/N] ${C_RESET}"; read -r yn
   [[ "$yn" =~ ^[Yy]$ ]] || { warn "Cancelled."; return; }
 
-  run_step "Refreshing package index" $SUDO apt-get update || true
+  run_step "Refreshing package index" apt_get update || true
 
-  local failed=() p
+  local failed=() p total=${#pkgs[@]} done_n=0 t0=$SECONDS
   for p in "${pkgs[@]}"; do
+    overall_progress "$done_n" "$total" "$t0"
+    done_n=$((done_n + 1))
     if ! has_candidate "$p"; then
       warn "No candidate for ${p} (not in index for your release/arch) — skipping."
       failed+=("$p"); continue
     fi
-    if run_step "Installing ${p}" \
-         $SUDO apt-get install -y --no-install-recommends -t kali-rolling "$p"; then :; else
+    if run_with_repair "[${done_n}/${total}] Installing ${p}" \
+         apt_get install -y --no-install-recommends -t kali-rolling "$p"; then :; else
       failed+=("$p")
     fi
   done
+  overall_progress "$total" "$total" "$t0"
 
   # Verify via dpkg.
   local n_ok=0 n_miss=0
@@ -376,8 +608,8 @@ install_metapackage() {
   fi
   printf "\n${C_YELLOW}Install ${pkg} now? [y/N] ${C_RESET}"; read -r yn
   [[ "$yn" =~ ^[Yy]$ ]] || { warn "Cancelled."; return; }
-  run_step "Installing ${pkg} (may take a long time)" \
-    $SUDO apt-get install -y -t kali-rolling "$pkg" \
+  run_with_repair "Installing ${pkg}" \
+    apt_get install -y -t kali-rolling "$pkg" \
     && ok "${pkg} installed." || err "Failed to install ${pkg}."
 }
 
@@ -533,8 +765,8 @@ main_menu() {
       1) tools_flow ;;
       2) system_flow ;;
       3) setup_kali_repo; pause ;;
-      4) run_step "Updating index" $SUDO apt-get update
-         run_step "Upgrading packages" $SUDO apt-get upgrade -y; pause ;;
+      4) run_with_repair "Updating index" apt_get update || true
+         run_with_repair "Upgrading packages" apt_get upgrade -y || true; pause ;;
       5) remove_kali_repo; pause ;;
       6) show_status; pause ;;
       q|Q) printf "\n${C_GREY}Stay ethical. Test only what you're authorized to.${C_RESET}\n\n"; exit 0 ;;

@@ -61,6 +61,8 @@ Because everything comes from APT at runtime, Ubunli automatically reflects new 
 - 🛡️ **Safe by design** — Kali's repo is pinned so it can **never** silently upgrade or replace your system packages.
 - ✅ **Verification &amp; dry-runs** — per-package `dpkg` verification, and an optional APT simulation before big metapackage installs.
 - 🔑 **Modern keyring flow** — uses `signed-by` keyrings, not the deprecated `apt-key`.
+- 📊 **Live progress bars &amp; time estimates** — every step shows a progress bar (driven by APT's real download/unpack progress), elapsed time and an estimated time left; multi-tool installs also show an overall `n/total` bar with an ETA.
+- 🩹 **Auto-repair &amp; retry** — if an install step fails, Ubunli reads the error, applies the matching fix (waits for a held APT lock or the network, finishes interrupted `dpkg` runs, repairs broken dependencies, clears bad downloads and refreshes the index, re-fetches the Kali key) and retries automatically, up to 3 attempts.
 
 ---
 
