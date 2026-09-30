@@ -141,7 +141,10 @@ step_status() {
       gets++; getn = substr($1, 5) + 0
       # "Get:N <url> <suite/comp> [arch] <pkg> [arch] <ver> [size]"
       item = isarch($4) ? $5 : $4
-      if ($0 ~ /(In)?Release|Packages|Translation|Contents|Sources/ && NF <= 6) item = $3 " " $4
+      # Index files (apt-get update): "kali-rolling/main amd64 Packages"
+      if ($0 ~ / (InRelease|Release|Packages|Sources|Translation-[^ ]*|Contents-[^ ]*)( |$)/) {
+        item = $3; for (i = 4; i <= NF && $i !~ /^\[/; i++) item = item " " $i
+      }
       next
     }
     /^[0-9]+ upgraded, [0-9]+ newly installed/ { total = $1 + $3; next }
@@ -245,7 +248,10 @@ run_step() {
     rm -f "$logf"; return 0
   else
     printf "\r${C_RED}%s${C_RESET} %s ${C_GREY}(%s)${C_RESET}%s\n%s" "$G_ERR" "$msg" "$(fmt_time "$el")" "$CLR" "$CLR"
-    printf "${C_DIM}%s${C_RESET}\n" "$(grep -avE '^(dl|pm|media)status:' "$logf" | tail -n 12)"
+    # Show just APT's error lines when there are any, else the log tail.
+    local errs; errs=$(grep -aE '^(E|W|Err):' "$logf" | tail -n 6) || true
+    [[ -n "$errs" ]] || errs=$(grep -avE '^(dl|pm|media)status:' "$logf" | tail -n 12) || true
+    printf "${C_DIM}%s${C_RESET}\n" "$errs"
     cp -f "$logf" "$LAST_LOG" 2>/dev/null || true
     rm -f "$logf"; return 1
   fi
@@ -427,6 +433,21 @@ KALI_REPO="https://http.kali.org/kali"
 
 kali_repo_present() { [[ -f "$KALI_LIST" && -f "$KALI_PIN" ]]; }
 
+# Restrict Kali to the native architecture. On multiarch systems (Ubuntu
+# enables i386 by default) APT would otherwise also fetch Kali's i386 index,
+# and a single failed index makes APT discard the whole Kali release.
+write_kali_list() {
+  printf 'deb [arch=%s signed-by=%s] %s kali-rolling main contrib non-free non-free-firmware\n' \
+    "$ARCH" "$KALI_KEYRING" "$KALI_REPO" | $SUDO tee "$KALI_LIST" >/dev/null
+}
+
+# Upgrade source lists written by older Ubunli versions (no arch= restriction).
+migrate_kali_list() {
+  [[ -f "$KALI_LIST" ]] && ! grep -q 'arch=' "$KALI_LIST" || return 0
+  log "Restricting the Kali repository to ${ARCH} (skips unneeded foreign-arch indexes)"
+  write_kali_list; SESSION_UPDATED=0
+}
+
 install_kali_key() {
   log "Fetching Kali archive signing key"
   curl -fsSL --retry 3 "$KALI_KEY_URL" | $SUDO gpg --batch --yes --dearmor -o "$KALI_KEYRING" 2>/dev/null \
@@ -435,7 +456,7 @@ install_kali_key() {
 }
 
 setup_kali_repo() {
-  kali_repo_present && return 0
+  kali_repo_present && { migrate_kali_list; refresh_index || true; return 0; }
   box "ADDING KALI REPOSITORY (PINNED / SAFE)"
   printf "${C_GREY} Kali packages are pinned BELOW your system's, so they never install\n"
   printf " or upgrade automatically — only when you explicitly choose them.${C_RESET}\n"
@@ -446,8 +467,7 @@ setup_kali_repo() {
 
   install_kali_key || die "Failed to fetch/verify Kali signing key. Check your network settings."
 
-  printf 'deb [signed-by=%s] %s kali-rolling main contrib non-free non-free-firmware\n' \
-    "$KALI_KEYRING" "$KALI_REPO" | $SUDO tee "$KALI_LIST" >/dev/null
+  write_kali_list
 
   $SUDO tee "$KALI_PIN" >/dev/null <<EOF
 # Installed by ubunli.sh — Kali packages never auto-selected (priority 50).
@@ -457,7 +477,7 @@ Pin-Priority: 50
 EOF
   ok "Repository, pin, and key installed."
   SESSION_UPDATED=0
-  refresh_index
+  refresh_index || true
 }
 
 remove_kali_repo() {
@@ -470,8 +490,12 @@ remove_kali_repo() {
 ensure_repo_ready() {
   # Everything is discovered from Kali's index, so the repo must exist AND its
   # package index must be downloaded before we can list or install anything.
-  kali_repo_present || setup_kali_repo
-  refresh_index
+  if kali_repo_present; then
+    migrate_kali_list
+    refresh_index || true
+  else
+    setup_kali_repo
+  fi
   if ! kali_index_ready; then
     err "The Kali package index isn't available to APT."
     err "A Kali mirror was probably unreachable during 'apt-get update'."
@@ -484,14 +508,34 @@ ensure_repo_ready() {
 
 SESSION_UPDATED=0
 refresh_index() {
-  # Refresh the APT index once per session; surface failures clearly.
+  # Refresh the APT index once per session. Kali's CDN is sometimes caught
+  # mid-sync ("File has unexpected size … Mirror sync in progress?") and APT
+  # then drops the WHOLE Kali index, so transient errors are retried.
   [[ "$SESSION_UPDATED" == "1" ]] && return 0
-  if run_step "Refreshing package index" apt_get update; then
-    SESSION_UPDATED=1
-  else
-    warn "'apt-get update' reported errors — the Kali index may be incomplete."
-    warn "If a Kali mirror is unreachable, check your network settings."
-  fi
+  local attempt tries=4 delay
+  for ((attempt = 1; attempt <= tries; attempt++)); do
+    if run_step "Refreshing package index" apt_get update; then
+      SESSION_UPDATED=1; return 0
+    fi
+    (( attempt == tries )) && break
+    delay=$(( attempt * 15 ))
+    if grep -qiE 'unexpected size|mirror sync|hash sum mismatch|clearsigned|not valid yet|bad header|connection reset|50[23] ' "$LAST_LOG"; then
+      log "Kali mirror is mid-sync — clearing partial downloads, retrying in ${delay}s (attempt $((attempt + 1))/${tries})"
+      $SUDO sh -c 'rm -rf /var/lib/apt/lists/partial/*' 2>/dev/null || true
+      sleep "$delay"
+    elif grep -qiE 'temporary failure resolving|could not resolve|network is unreachable|connection timed out|unable to connect|connection failed' "$LAST_LOG"; then
+      wait_for_network || break
+    elif grep -qiE 'could not get lock|unable to acquire the dpkg|is another process using it' "$LAST_LOG"; then
+      wait_for_apt_lock || break
+    elif grep -qiE 'NO_PUBKEY|EXPKEYSIG|KEYEXPIRED|signatures couldn.t be verified' "$LAST_LOG"; then
+      install_kali_key || break
+    else
+      break
+    fi
+  done
+  warn "'apt-get update' reported errors — the Kali index may be incomplete."
+  warn "If a Kali mirror is unreachable, check your network settings."
+  return 1
 }
 
 kali_index_ready() {
@@ -618,7 +662,7 @@ install_metapackage() {
   box "$label"
 
   if ! has_candidate "$pkg"; then
-    refresh_index
+    refresh_index || true
     if ! has_candidate "$pkg"; then
       err "APT has no installable candidate for '${pkg}'."
       err "The Kali index isn't loaded for your system. Likely causes:"
